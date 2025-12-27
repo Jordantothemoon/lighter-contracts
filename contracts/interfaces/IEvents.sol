@@ -19,13 +19,33 @@ interface IEvents {
   event BatchesRevert(uint64 newTotalBlocksCommitted);
 
   /// @notice Event emitted when user funds are deposited to a zkLighter account
-  event Deposit(uint48 toAccountIndex, address toAddress, uint128 amount);
+  event Deposit(uint48 toAccountIndex, address toAddress, uint16 assetIndex, TxTypes.RouteType routeType, uint128 baseAmount);
 
   /// @notice Event emitted when user requests to change their api public key
   event ChangePubKey(uint48 accountIndex, uint8 apiKeyIndex, bytes pubKey);
 
   /// @notice Market created event
   event CreateMarket(TxTypes.CreateMarket params, uint8 sizeDecimals, uint8 priceDecimals, bytes32 symbol);
+
+  /// @notice Asset config registered event
+  event RegisterAssetConfig(
+    uint16 assetIndex,
+    address tokenAddress,
+    uint8 withdrawalsEnabled,
+    uint56 extensionMultiplier,
+    uint128 tickSize,
+    uint64 depositCapTicks,
+    uint64 minDepositTicks
+  );
+
+  /// @notice Asset config updated event
+  event UpdateAssetConfig(uint16 assetIndex, uint8 withdrawalsEnabled, uint64 depositCapTicks, uint64 minDepositTicks);
+
+  /// @notice Asset registered event
+  event RegisterAsset(TxTypes.RegisterAsset params, uint8 l1Decimals, uint8 decimals, bytes32 symbol);
+
+  /// @notice Asset updated event
+  event UpdateAsset(TxTypes.UpdateAsset params);
 
   /// @notice Market updated event
   event UpdateMarket(TxTypes.UpdateMarket params);
@@ -34,7 +54,7 @@ interface IEvents {
   event CancelAllOrders(uint48 accountIndex);
 
   /// @notice Event emitted when a withdraw request is created
-  event Withdraw(uint48 accountIndex, uint64 usdcAmount);
+  event Withdraw(uint48 accountIndex, uint16 assetIndex, TxTypes.RouteType routeType, uint64 baseAmount);
 
   /// @notice Event emitted when a new create order is created
   event CreateOrder(TxTypes.CreateOrder params);
@@ -42,8 +62,8 @@ interface IEvents {
   /// @notice Event emitted when a new burn shares is created
   event BurnShares(TxTypes.BurnShares params);
 
-  /// @notice Event emitted when user funds are withdrawn from the zkLighter state but not from contract
-  event WithdrawPending(address indexed owner, uint128 amount);
+  /// @notice Event emitted when user funds are withdrawn from contract
+  event WithdrawPending(address indexed owner, uint16 assetIndex, uint128 baseAmount);
 
   /// @notice New priority request event. Emitted when a request is placed into mapping
   event NewPriorityRequest(address sender, uint64 serialId, uint8 pubdataType, bytes pubData, uint64 expirationTimestamp);

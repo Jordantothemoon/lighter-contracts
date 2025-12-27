@@ -6,28 +6,55 @@ import "../interfaces/IZkLighter.sol";
 
 contract Faucet {
   IZkLighter public zkLighter;
-  IGovernance public governance;
   IERC20 public usdc;
   address public minter;
+  mapping(uint16 => address) public assetIndexToAddress;
 
   modifier onlyMinter() {
     require(msg.sender == minter);
     _;
   }
 
-  constructor(address _zkLighter, address _governance, address _minter) {
+  constructor(address _zkLighter, address _minter) {
     zkLighter = IZkLighter(_zkLighter);
-    governance = IGovernance(_governance);
     minter = _minter;
-    usdc = governance.usdc();
-    usdc.approve(_zkLighter, type(uint256).max);
   }
 
-  function mint(address[] memory _to, uint64[] memory _amount) public onlyMinter {
+  // receive ETH
+  receive() external payable {}
+
+  function approve(uint16 _assetIndex, address _erc20Address) public onlyMinter {
+    IERC20(_erc20Address).approve(address(zkLighter), type(uint256).max);
+    assetIndexToAddress[_assetIndex] = _erc20Address;
+  }
+
+  function mint(address[] memory _to, uint16[] memory _assetIndex, uint256[] memory _amount) public onlyMinter {
     uint256 length = _to.length;
     require(length == _amount.length);
+    require(length == _assetIndex.length);
     for (uint256 i = 0; i < length; i += 1) {
-      zkLighter.deposit(_amount[i], _to[i]);
+      TxTypes.RouteType dest = TxTypes.RouteType.Spot;
+      if (_assetIndex[i] == 3) {
+        dest = TxTypes.RouteType.Perps;
+      }
+      if (_assetIndex[i] == 1) {
+        zkLighter.deposit{value: _amount[i]}(_to[i], _assetIndex[i], dest, _amount[i]);
+      } else {
+        zkLighter.deposit(_to[i], _assetIndex[i], dest, _amount[i]);
+      }
+    }
+  }
+
+  function transfer(address[] memory _to, uint16[] memory _assetIndex, uint256[] memory _amount) public onlyMinter {
+    uint256 length = _to.length;
+    require(length == _amount.length);
+    require(length == _assetIndex.length);
+    for (uint256 i = 0; i < length; i += 1) {
+      if (_assetIndex[i] == 1) {
+        payable(_to[i]).transfer(_amount[i]);
+      } else {
+        IERC20(assetIndexToAddress[_assetIndex[i]]).transfer(_to[i], _amount[i]);
+      }
     }
   }
 

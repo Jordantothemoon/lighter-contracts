@@ -110,7 +110,7 @@ contract Storage is IZkLighterDesertMode, Config {
   mapping(uint32 => bool) internal __DEPRECATED_performedDesert;
 
   uint8 internal constant FILLED_GAS_RESERVE_VALUE = 0xff; // Used for setting gas reserve value, so that the slot will not be emptied with 0 balance
-  struct PendingBalance {
+  struct DEPRECATED_PendingBalance {
     uint128 balanceToWithdraw;
     uint8 gasReserveValue;
   }
@@ -123,13 +123,14 @@ contract Storage is IZkLighterDesertMode, Config {
   uint48 public lastAccountIndex;
   /// @notice Account address to account id mapping, excluding the system accounts
   mapping(address => uint48) public addressToAccountIndex;
+
   /// @dev Base layer withdrawable USDC balances for each master account index
-  mapping(uint48 => PendingBalance) internal pendingBalance;
+  /// @dev Deprecated: use pendingAssetBalances instead
+  mapping(uint48 => DEPRECATED_PendingBalance) internal DEPRECATED_pendingBalance;
 
   /// @dev Deprecated state root updates mapping, moved to ExtendableStorage
   mapping(uint64 => bytes32) public __DEPRECATED_stateRootUpdates;
 
-  /// @notice Checks that current state not is desert mode
   modifier onlyActive() {
     if (desertMode) {
       // Desert mode activated

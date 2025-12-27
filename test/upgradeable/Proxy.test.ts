@@ -125,7 +125,7 @@ describe('Proxy', function () {
 
     it('delegate `deposit` function', async function () {
       const implement = mockZkLighter.attach(await proxyZkLighter.getAddress()).connect(owner);
-      await expect(implement.deposit(1_000_000, await addr1.getAddress())).to.be.revertedWith(
+      await expect(implement.deposit(await addr1.getAddress(), 3, 0, 1_000_000)).to.be.revertedWith(
         'ERC20: insufficient allowance',
       );
     });
@@ -198,7 +198,7 @@ describe('Proxy', function () {
       );
 
       // calls bypassing proxy contract should be intercepted
-      await expect(mockZkLighter.deposit(10, await addr1.getAddress())).to.be.revertedWithCustomError(
+      await expect(mockZkLighter.deposit(await addr1.getAddress(), 3, 0, 10)).to.be.revertedWithCustomError(
         mockZkLighter,
         'ZkLighter_ImplCantDelegateToAddl',
       );

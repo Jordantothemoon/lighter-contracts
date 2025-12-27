@@ -6,13 +6,19 @@ import {
   PubDataTypeMap,
   UpdateMarket,
   advanceBlocks,
-  emptyCreateMarket,
-  emptyUpdateMarket,
+  emptyCreatePerpsMarket,
+  emptyCreateSpotMarket,
+  emptyUpdatePerpsMarket,
+  emptyUpdateSpotMarket,
   encodePubData,
   getExpirationTimestamp,
   getNextPriorityRequestId,
   getZKLighterTestSetupValues,
   incrementBlockstampBySeconds,
+  serializeCreatePerpsMarket,
+  serializeCreateSpotMarket,
+  serializeUpdatePerpsMarket,
+  serializeUpdateSpotMarket,
 } from './shared';
 import { ethers } from 'hardhat';
 import { SignerWithAddress } from '@nomiclabs/hardhat-ethers/signers';
@@ -72,7 +78,7 @@ export async function getAccountIndex(zkLighter: Contract, receiver: SignerWithA
 export async function withdrawUSDC(zkLighter: Contract, amount: number, token: Contract, sender: SignerWithAddress) {
   const index = await getAccountIndex(zkLighter, sender);
   const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
-  const tx = await zkLighter.connect(sender).withdraw(index, amount);
+  const tx = await zkLighter.connect(sender).withdraw(index, 3, 0, amount);
   await tx.wait();
   const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
 
@@ -80,6 +86,8 @@ export async function withdrawUSDC(zkLighter: Contract, amount: number, token: C
     PriorityPubDataType.L1Withdraw,
     index,
     index,
+    3,
+    0,
     amount,
   ]);
 
@@ -87,7 +95,31 @@ export async function withdrawUSDC(zkLighter: Contract, amount: number, token: C
     .to.emit(zkLighter, 'NewPriorityRequest')
     .withArgs(sender.address, nextPriorityRequestId, PriorityPubDataType.L1Withdraw, pubData, expirationTimestamp)
     .to.emit(zkLighter, 'Withdraw')
-    .withArgs(index, amount);
+    .withArgs(index, 3, 0, amount);
+  return { tx, pubData };
+}
+
+export async function withdrawNative(zkLighter: Contract, amount: number, sender: SignerWithAddress) {
+  const index = await getAccountIndex(zkLighter, sender);
+  const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
+  const tx = await zkLighter.connect(sender).withdraw(index, 1, 0, amount);
+  await tx.wait();
+  const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
+
+  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1Withdraw], [
+    PriorityPubDataType.L1Withdraw,
+    index,
+    index,
+    1,
+    0,
+    amount,
+  ]);
+
+  await expect(tx)
+    .to.emit(zkLighter, 'NewPriorityRequest')
+    .withArgs(sender.address, nextPriorityRequestId, PriorityPubDataType.L1Withdraw, pubData, expirationTimestamp)
+    .to.emit(zkLighter, 'Withdraw')
+    .withArgs(index, 1, 0, amount);
   return { tx, pubData };
 }
 
@@ -217,7 +249,7 @@ export async function depositUSDC(
 ) {
   const index = await getAccountIndex(zkLighter, receiver);
   const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
-  const tx = await zkLighter.connect(sender).deposit(transferAmount, await receiver.getAddress());
+  const tx = await zkLighter.connect(sender).deposit(await receiver.getAddress(), 3, 0, transferAmount);
   await tx.wait();
   const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
 
@@ -225,6 +257,8 @@ export async function depositUSDC(
     PriorityPubDataType.L1Deposit,
     index,
     await receiver.getAddress(),
+    3,
+    0,
     transferAmount,
   ]);
 
@@ -232,7 +266,7 @@ export async function depositUSDC(
     .to.emit(zkLighter, 'NewPriorityRequest')
     .withArgs(sender.address, nextPriorityRequestId, PriorityPubDataType.L1Deposit, pubData, expirationTimestamp)
     .to.emit(zkLighter, 'Deposit')
-    .withArgs(index, await receiver.getAddress(), transferAmount);
+    .withArgs(index, await receiver.getAddress(), 3, 0, transferAmount);
 
   const indexAfter = await zkLighter.addressToAccountIndex(await receiver.getAddress());
   expect(indexAfter).to.eq(index);
@@ -249,7 +283,7 @@ export async function depositUSDCToSystemAccount(
   receiverIndex: number,
 ) {
   const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
-  const tx = await zkLighter.connect(sender).deposit(transferAmount, await receiver.getAddress());
+  const tx = await zkLighter.connect(sender).deposit(await receiver.getAddress(), 3, 0, transferAmount);
   await tx.wait();
   const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
 
@@ -257,6 +291,8 @@ export async function depositUSDCToSystemAccount(
     PriorityPubDataType.L1Deposit,
     receiverIndex,
     ethers.ZeroAddress,
+    3,
+    0,
     transferAmount,
   ]);
 
@@ -264,7 +300,7 @@ export async function depositUSDCToSystemAccount(
     .to.emit(zkLighter, 'NewPriorityRequest')
     .withArgs(sender.address, nextPriorityRequestId, PriorityPubDataType.L1Deposit, pubData, expirationTimestamp)
     .to.emit(zkLighter, 'Deposit')
-    .withArgs(receiverIndex, ethers.ZeroAddress, transferAmount);
+    .withArgs(receiverIndex, ethers.ZeroAddress, 3, 0, transferAmount);
 
   const indexAfter = await zkLighter.addressToAccountIndex(await receiver.getAddress());
   expect(indexAfter).to.eq(0);
@@ -272,47 +308,33 @@ export async function depositUSDCToSystemAccount(
   return { tx, pubData };
 }
 
-export async function createMarket(
+export async function createSpotMarket(
   zkLighter: Contract,
   governorWallet: SignerWithAddress,
-  marketIndex: number,
-  symbol: string,
   sizeDecimals: number,
   priceDecimals: number,
-  quoteMultiplier: number,
-  takerFee: number,
-  makerFee: number,
-  liquidationFee: number,
-  defaultInitialMarginFraction: number,
-  minInitialMarginFraction: number,
-  maintenanceMarginFraction: number,
-  closeOutMarginFraction: number,
-  minBaseAmount: number,
-  minQuoteAmount: number,
-  interestRate: number,
-  fundingClampSmall: number,
-  fundingClampBig: number,
-  openInterestLimit: number,
-  orderQuoteLimit: number,
+  symbol: string,
+  params: any,
 ) {
+  const marketData = ethers.solidityPacked(
+    ['uint16', 'uint16', 'uint56', 'uint56', 'uint32', 'uint32', 'uint48', 'uint48', 'uint48'],
+    [
+      params.baseAssetIndex,
+      params.quoteAssetIndex,
+      params.sizeExtensionMultiplier,
+      params.quoteExtensionMultiplier,
+      params.takerFee,
+      params.makerFee,
+      params.minBaseAmount,
+      params.minQuoteAmount,
+      params.orderQuoteLimit,
+    ],
+  );
   const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1CreateMarket], [
     PriorityPubDataType.L1CreateMarket,
-    marketIndex,
-    quoteMultiplier,
-    takerFee,
-    makerFee,
-    liquidationFee,
-    minBaseAmount,
-    minQuoteAmount,
-    defaultInitialMarginFraction,
-    minInitialMarginFraction,
-    maintenanceMarginFraction,
-    closeOutMarginFraction,
-    interestRate,
-    fundingClampSmall,
-    fundingClampBig,
-    openInterestLimit,
-    orderQuoteLimit,
+    params.marketIndex,
+    1, // marketType
+    marketData,
     sizeDecimals,
     priceDecimals,
     symbol,
@@ -320,32 +342,21 @@ export async function createMarket(
 
   const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
 
-  const params = {
-    marketIndex,
-    quoteMultiplier,
-    takerFee,
-    makerFee,
-    liquidationFee,
-    minBaseAmount,
-    minQuoteAmount,
-    defaultInitialMarginFraction,
-    minInitialMarginFraction,
-    maintenanceMarginFraction,
-    closeOutMarginFraction,
-    interestRate,
-    fundingClampSmall,
-    fundingClampBig,
-    openInterestLimit,
-    orderQuoteLimit,
+  const createMarketParams = {
+    marketIndex: params.marketIndex,
+    marketType: 1,
+    marketData,
   } as CreateMarket;
 
-  const tx = await zkLighter.connect(governorWallet).createMarket(sizeDecimals, priceDecimals, symbol, params);
+  const tx = await zkLighter
+    .connect(governorWallet)
+    .createMarket(sizeDecimals, priceDecimals, symbol, createMarketParams);
   const receipt = await tx.wait();
   const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
 
   expect(tx)
     .to.emit(zkLighter, 'CreateMarket')
-    .withArgs(params, sizeDecimals, priceDecimals, symbol)
+    .withArgs(createMarketParams, sizeDecimals, priceDecimals, symbol)
     .to.emit(zkLighter, 'NewPriorityRequest')
     .withArgs(
       governorWallet.address,
@@ -358,68 +369,188 @@ export async function createMarket(
   return { tx, pubData, receipt };
 }
 
-export async function updateMarket(
+export async function createPerpsMarket(
   zkLighter: Contract,
   governorWallet: SignerWithAddress,
-  marketIndex: number,
-  status: number,
-  takerFee: number,
-  makerFee: number,
-  liquidationFee: number,
-  defaultInitialMarginFraction: number,
-  minInitialMarginFraction: number,
-  maintenanceMarginFraction: number,
-  closeOutMarginFraction: number,
-  minBaseAmount: number,
-  minQuoteAmount: number,
-  interestRate: number,
-  fundingClampSmall: number,
-  fundingClampBig: number,
-  openInterestLimit: number,
-  orderQuoteLimit: number,
+  sizeDecimals: number,
+  priceDecimals: number,
+  symbol: string,
+  params: any,
 ) {
-  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1UpdateMarket], [
-    PriorityPubDataType.L1UpdateMarket,
-    marketIndex,
-    status,
-    takerFee,
-    makerFee,
-    liquidationFee,
-    minBaseAmount,
-    minQuoteAmount,
-    defaultInitialMarginFraction,
-    minInitialMarginFraction,
-    maintenanceMarginFraction,
-    closeOutMarginFraction,
-    interestRate,
-    fundingClampSmall,
-    fundingClampBig,
-    openInterestLimit,
-    orderQuoteLimit,
+  const marketData = ethers.solidityPacked(
+    [
+      'uint32',
+      'uint32',
+      'uint32',
+      'uint32',
+      'uint48',
+      'uint48',
+      'uint16',
+      'uint16',
+      'uint16',
+      'uint16',
+      'uint32',
+      'uint24',
+      'uint24',
+      'uint56',
+      'uint48',
+    ],
+    [
+      params.quoteMultiplier,
+      params.takerFee,
+      params.makerFee,
+      params.liquidationFee,
+      params.minBaseAmount,
+      params.minQuoteAmount,
+      params.defaultInitialMarginFraction,
+      params.minInitialMarginFraction,
+      params.maintenanceMarginFraction,
+      params.closeOutMarginFraction,
+      params.interestRate,
+      params.fundingClampSmall,
+      params.fundingClampBig,
+      params.openInterestLimit,
+      params.orderQuoteLimit,
+    ],
+  );
+  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1CreateMarket], [
+    PriorityPubDataType.L1CreateMarket,
+    params.marketIndex,
+    0, // marketType
+    marketData,
+    sizeDecimals,
+    priceDecimals,
+    symbol,
   ]);
 
   const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
 
-  const params = {
-    marketIndex,
-    status,
-    takerFee,
-    makerFee,
-    liquidationFee,
-    minBaseAmount,
-    minQuoteAmount,
-    defaultInitialMarginFraction,
-    minInitialMarginFraction,
-    maintenanceMarginFraction,
-    closeOutMarginFraction,
-    interestRate,
-    fundingClampSmall,
-    fundingClampBig,
-    openInterestLimit,
-    orderQuoteLimit,
-  } as UpdateMarket;
+  const createMarketParams = {
+    marketIndex: params.marketIndex,
+    marketType: 0,
+    marketData,
+  } as CreateMarket;
 
-  const tx = await zkLighter.connect(governorWallet).updateMarket(params);
+  const tx = await zkLighter
+    .connect(governorWallet)
+    .createMarket(sizeDecimals, priceDecimals, symbol, createMarketParams);
+  const receipt = await tx.wait();
+  const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
+
+  expect(tx)
+    .to.emit(zkLighter, 'CreateMarket')
+    .withArgs(createMarketParams, sizeDecimals, priceDecimals, symbol)
+    .to.emit(zkLighter, 'NewPriorityRequest')
+    .withArgs(
+      governorWallet.address,
+      nextPriorityRequestId,
+      PriorityPubDataType.L1CreateMarket,
+      pubData,
+      expirationTimestamp,
+    );
+
+  return { tx, pubData, receipt };
+}
+
+export async function updatePerpsMarket(zkLighter: Contract, governorWallet: SignerWithAddress, params: any) {
+  const marketData = ethers.solidityPacked(
+    [
+      'uint8',
+      'uint32',
+      'uint32',
+      'uint32',
+      'uint48',
+      'uint48',
+      'uint16',
+      'uint16',
+      'uint16',
+      'uint16',
+      'uint32',
+      'uint24',
+      'uint24',
+      'uint56',
+      'uint48',
+    ],
+    [
+      params.status,
+      params.takerFee,
+      params.makerFee,
+      params.liquidationFee,
+      params.minBaseAmount,
+      params.minQuoteAmount,
+      params.defaultInitialMarginFraction,
+      params.minInitialMarginFraction,
+      params.maintenanceMarginFraction,
+      params.closeOutMarginFraction,
+      params.interestRate,
+      params.fundingClampSmall,
+      params.fundingClampBig,
+      params.openInterestLimit,
+      params.orderQuoteLimit,
+    ],
+  );
+
+  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1UpdateMarket], [
+    PriorityPubDataType.L1UpdateMarket,
+    params.marketIndex,
+    0, // marketType
+    marketData,
+  ]);
+
+  const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
+
+  const updateMarketParams = {
+    marketIndex: params.marketIndex,
+    marketType: 0,
+    marketData,
+  } as UpdateMarket;
+  const tx = await zkLighter.connect(governorWallet).updateMarket(updateMarketParams);
+  const receipt = await tx.wait();
+  const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
+
+  expect(tx)
+    .to.emit(zkLighter, 'UpdateMarket')
+    .withArgs(params)
+    .to.emit(zkLighter, 'NewPriorityRequest')
+    .withArgs(
+      governorWallet.address,
+      nextPriorityRequestId,
+      PriorityPubDataType.L1UpdateMarket,
+      pubData,
+      expirationTimestamp,
+    );
+
+  return { tx, pubData, receipt };
+}
+
+export async function updateSpotMarket(zkLighter: Contract, governorWallet: SignerWithAddress, params: any) {
+  const marketData = ethers.solidityPacked(
+    ['uint8', 'uint32', 'uint32', 'uint48', 'uint48', 'uint48'],
+    [
+      params.status,
+      params.takerFee,
+      params.makerFee,
+      params.minBaseAmount,
+      params.minQuoteAmount,
+      params.orderQuoteLimit,
+    ],
+  );
+
+  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1UpdateMarket], [
+    PriorityPubDataType.L1UpdateMarket,
+    params.marketIndex,
+    1, // marketType
+    marketData,
+  ]);
+
+  const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
+
+  const updateMarketParams = {
+    marketIndex: params.marketIndex,
+    marketType: 1,
+    marketData,
+  } as UpdateMarket;
+  const tx = await zkLighter.connect(governorWallet).updateMarket(updateMarketParams);
   const receipt = await tx.wait();
   const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
 
@@ -459,6 +590,49 @@ export async function activateDesertMode(
   const desertModeActivated = await zkLighter.desertMode();
 
   return desertModeActivated;
+}
+
+export async function depositNative(
+  zkLighter: Contract,
+  transferAmount: number, // in ticks
+  sender: SignerWithAddress,
+  receiver: SignerWithAddress,
+) {
+  const index = await getAccountIndex(zkLighter, receiver);
+  const nextPriorityRequestId: number = await getNextPriorityRequestId(zkLighter);
+  const tx = await zkLighter
+    .connect(sender)
+    .deposit(
+      await receiver.getAddress(),
+      1,
+      1,
+      BigNumber.from(transferAmount).mul(BigNumber.from(10).pow(10)).toString(),
+      {
+        value: BigNumber.from(transferAmount).mul(BigNumber.from(10).pow(10)).toString(),
+      },
+    );
+  await tx.wait();
+  const expirationTimestamp: number = await getExpirationTimestamp(zkLighter);
+
+  const pubData = encodePubData(PubDataTypeMap[PriorityPubDataType.L1Deposit], [
+    PriorityPubDataType.L1Deposit,
+    index,
+    await receiver.getAddress(),
+    1,
+    1,
+    transferAmount,
+  ]);
+
+  await expect(tx)
+    .to.emit(zkLighter, 'NewPriorityRequest')
+    .withArgs(sender.address, nextPriorityRequestId, PriorityPubDataType.L1Deposit, pubData, expirationTimestamp)
+    .to.emit(zkLighter, 'Deposit')
+    .withArgs(index, await receiver.getAddress(), 1, 1, transferAmount);
+
+  const indexAfter = await zkLighter.addressToAccountIndex(await receiver.getAddress());
+  expect(indexAfter).to.eq(index);
+
+  return { tx, pubData };
 }
 
 describe('ZkLighter Tests', function () {
@@ -503,20 +677,20 @@ describe('ZkLighter Tests', function () {
     describe('deposit USDC', async function () {
       it('should reverted', async () => {
         // amount check
-        await expect(zkLighter.deposit(0, await receiver1.getAddress())).to.be.revertedWithCustomError(
+        await expect(zkLighter.deposit(await receiver1.getAddress(), 3, 0, 0)).to.be.revertedWithCustomError(
           additionalZkLighter,
           'AdditionalZkLighter_InvalidDepositAmount',
         );
 
         // toAddress should not be zero address
-        await expect(zkLighter.deposit(1_000_000_000, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+        await expect(zkLighter.deposit(ethers.ZeroAddress, 3, 0, 1_000_000_000)).to.be.revertedWithCustomError(
           additionalZkLighter,
           'AdditionalZkLighter_RecipientAddressInvalid',
         );
 
         // max deposit amount
         await expect(
-          zkLighter.connect(owner).deposit(1_000_000_000 * 1_000_000 + 1, await receiver1.getAddress()),
+          zkLighter.connect(owner).deposit(await receiver1.getAddress(), 3, 0, BigNumber.from(2).pow(60).toString()),
         ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidDepositAmount');
       });
 
@@ -543,6 +717,21 @@ describe('ZkLighter Tests', function () {
         await depositUSDCToSystemAccount(zkLighter, 10_000_000, usdc, sender1, receiver1, 1);
       });
     });
+
+    describe('deposit ETH', async function () {
+      it('should success', async () => {
+        await depositNative(zkLighter, 1_000_000, sender1, receiver1);
+      });
+
+      it('should register', async () => {
+        const indexBefore = await zkLighter.addressToAccountIndex(await receiver1.getAddress());
+        expect(indexBefore).to.eq(0);
+        await depositNative(zkLighter, 1_000_000, sender1, receiver1);
+        const indexAfter = await zkLighter.addressToAccountIndex(await receiver1.getAddress());
+        expect(indexAfter).to.not.eq(0);
+        await depositNative(zkLighter, 1_000_000, sender2, receiver1);
+      });
+    });
   });
 
   describe('Withdraw', function () {
@@ -551,17 +740,18 @@ describe('ZkLighter Tests', function () {
         await depositUSDC(zkLighter, 10_000_000, usdc, sender1, receiver1);
         const index = await getAccountIndex(zkLighter, receiver1);
 
-        await expect(zkLighter.connect(receiver1).withdraw(index, 0)).to.be.revertedWithCustomError(
+        await expect(zkLighter.connect(receiver1).withdraw(index, 3, 0, 0)).to.be.revertedWithCustomError(
           additionalZkLighter,
           'AdditionalZkLighter_InvalidWithdrawAmount',
         );
 
-        await expect(zkLighter.connect(receiver1).withdraw(index, 1152921504606846976n)).to.be.revertedWithCustomError(
-          additionalZkLighter,
-          'AdditionalZkLighter_InvalidWithdrawAmount',
-        );
+        await expect(
+          zkLighter.connect(receiver1).withdraw(index, 3, 0, BigNumber.from(2).pow(60).toString()),
+        ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidWithdrawAmount');
 
-        await expect(zkLighter.withdraw(index + 5n, 10)).to.be.revertedWithCustomError(
+        await expect(zkLighter.connect(receiver1).withdraw(index, 3, 2, 10n)).to.be.revertedWithoutReason();
+
+        await expect(zkLighter.withdraw(index + 5n, 3, 0, 10n)).to.be.revertedWithCustomError(
           additionalZkLighter,
           'AdditionalZkLighter_AccountIsNotRegistered',
         );
@@ -571,6 +761,44 @@ describe('ZkLighter Tests', function () {
         await depositUSDC(zkLighter, 10_000_000, usdc, sender1, receiver1);
         await withdrawUSDC(zkLighter, 100, usdc, receiver1);
       });
+    });
+
+    describe('withdraw ETH', async function () {
+      it('should reverted', async () => {
+        await depositNative(zkLighter, 10_000_000, sender1, receiver1);
+        const index = await getAccountIndex(zkLighter, receiver1);
+
+        await expect(zkLighter.connect(receiver1).withdraw(index, 1, 0, 0)).to.be.revertedWithCustomError(
+          additionalZkLighter,
+          'AdditionalZkLighter_InvalidWithdrawAmount',
+        );
+
+        await expect(
+          zkLighter.connect(receiver1).withdraw(index, 1, 0, BigNumber.from(2).pow(60).toString()),
+        ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidWithdrawAmount');
+
+        await expect(zkLighter.connect(receiver1).withdraw(index, 1, 2, 10n)).to.be.revertedWithoutReason();
+
+        await expect(zkLighter.withdraw(index + 5n, 1, 0, 10)).to.be.revertedWithCustomError(
+          additionalZkLighter,
+          'AdditionalZkLighter_AccountIsNotRegistered',
+        );
+      });
+
+      it('should success', async () => {
+        await depositNative(zkLighter, 10_000_000, sender1, receiver1);
+        await withdrawNative(zkLighter, 100, receiver1);
+      });
+    });
+
+    it('should reverted if asset not registered', async () => {
+      await depositNative(zkLighter, 10_000_000, sender1, receiver1);
+      const index = await getAccountIndex(zkLighter, receiver1);
+
+      await expect(zkLighter.connect(receiver1).withdraw(index, 59, 0, 0)).to.be.revertedWithCustomError(
+        additionalZkLighter,
+        'AdditionalZkLighter_InvalidAssetIndex',
+      );
     });
   });
 
@@ -634,29 +862,6 @@ describe('ZkLighter Tests', function () {
   describe('CreateOrder', function () {
     it('should reverted', async () => {
       await depositUSDC(zkLighter, 10_000_000, usdc, sender1, receiver1);
-      await createMarket(
-        zkLighter,
-        governorWallet,
-        1n,
-        ethers.encodeBytes32String('BTC'),
-        3n,
-        3n,
-        1n,
-        0n,
-        0n,
-        1n,
-        3n,
-        3n,
-        2n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-      );
 
       await expect(
         zkLighter.connect(receiver1).createOrder(281474976710655, 1, 1, 1, 1, 1),
@@ -680,6 +885,12 @@ describe('ZkLighter Tests', function () {
       await expect(zkLighter.connect(receiver1).createOrder(index, 1, 1, 1, 1, 2)).to.be.revertedWithCustomError(
         additionalZkLighter,
         'AdditionalZkLighter_InvalidCreateOrderParameters',
+      );
+
+      // invalid marketIndex
+      await expect(zkLighter.connect(receiver1).createOrder(index, 2049, 1, 1, 1, 1)).to.be.revertedWithCustomError(
+        additionalZkLighter,
+        'AdditionalZkLighter_InvalidMarketIndex',
       );
     });
 
@@ -729,272 +940,534 @@ describe('ZkLighter Tests', function () {
     });
   });
 
-  describe('CreateMarket', function () {
+  describe('CreatePerpsMarket', function () {
     it('should create orderbook and emit `CreateMarket` event', async () => {
-      await createMarket(
-        zkLighter,
-        governorWallet,
-        1n,
-        ethers.encodeBytes32String('BTC'),
-        3n,
-        3n,
-        1n,
-        0n,
-        0n,
-        1n,
-        3n,
-        3n,
-        2n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-        1n,
-      );
+      const params = {
+        marketIndex: 1n,
+        quoteMultiplier: 1n,
+        takerFee: 2n,
+        makerFee: 1n,
+        liquidationFee: 1n,
+        minBaseAmount: 1n,
+        minQuoteAmount: 1n,
+        defaultInitialMarginFraction: 1n,
+        minInitialMarginFraction: 1n,
+        maintenanceMarginFraction: 1n,
+        closeOutMarginFraction: 1n,
+        interestRate: 1n,
+        fundingClampSmall: 1n,
+        fundingClampBig: 1n,
+        openInterestLimit: 1n,
+        orderQuoteLimit: 1n,
+      };
+      await createPerpsMarket(zkLighter, governorWallet, 3, 3, ethers.encodeBytes32String('BTC'), params);
     });
 
     it('should fail to create orderbook if market index is invalid', async () => {
-      const params = emptyCreateMarket(255);
+      const params = emptyCreatePerpsMarket(255);
 
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to create orderbook if market index is spot', async () => {
+      const params = emptyCreatePerpsMarket(2049);
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
     });
 
     it('should fail to create orderbook if quoteMultiplier is invalid', async () => {
-      const params = emptyCreateMarket(1);
-      params.quoteMultiplier = 0;
+      const params = emptyCreatePerpsMarket(1);
+      params.rawMarketData.quoteMultiplier = 0;
 
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidQuoteMultiplier');
 
-      params.quoteMultiplier = 1_000_000 + 1;
+      params.rawMarketData.quoteMultiplier = 1_000_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidQuoteMultiplier');
     });
 
     it('should fail to create orderbook if fees are invalid', async () => {
-      const params = emptyCreateMarket(1);
-      params.quoteMultiplier = 1;
+      const params = emptyCreatePerpsMarket(1);
+      params.rawMarketData.quoteMultiplier = 1;
 
-      params.makerFee = 1_000_000 + 1;
+      params.rawMarketData.makerFee = 1_000_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
 
-      params.makerFee = 1;
-      params.takerFee = 1_000_000 + 1;
+      params.rawMarketData.makerFee = 1;
+      params.rawMarketData.takerFee = 1_000_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
 
-      params.makerFee = 1;
-      params.takerFee = 1;
-      params.liquidationFee = 1_000_000 + 1;
+      params.rawMarketData.makerFee = 1;
+      params.rawMarketData.takerFee = 1;
+      params.rawMarketData.liquidationFee = 1_000_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
     });
 
     it('should fail to create orderbook if margin requirements are invalid', async () => {
-      const params = emptyCreateMarket(1);
-      params.quoteMultiplier = 1;
+      const params = emptyCreatePerpsMarket(1);
+      params.rawMarketData.quoteMultiplier = 1;
 
-      params.closeOutMarginFraction = 0;
+      params.rawMarketData.closeOutMarginFraction = 0;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 10_000 + 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 10_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
     });
 
     it('should fail to create orderbook if interestRate is invalid', async () => {
-      const params = emptyCreateMarket(1);
-      params.quoteMultiplier = 1;
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 1;
-
-      params.interestRate = 1_000_000 + 1;
+      const params = emptyCreatePerpsMarket(1);
+      params.rawMarketData.quoteMultiplier = 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 1;
+      params.rawMarketData.interestRate = 1_000_000 + 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidInterestRate');
     });
 
     it('should fail to create orderbook if min amounts are invalid', async () => {
-      const params = emptyCreateMarket(1);
-      params.quoteMultiplier = 1;
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 1;
-      params.interestRate = 1;
-
-      params.minBaseAmount = 2 ** 48;
+      const params = emptyCreatePerpsMarket(1);
+      params.rawMarketData.quoteMultiplier = 1;
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 1;
+      params.rawMarketData.interestRate = 1;
+      params.rawMarketData.minBaseAmount = 2 ** 48 - 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMinAmounts');
 
-      params.minBaseAmount = 1;
-      params.minQuoteAmount = 2 ** 48;
+      params.rawMarketData.minBaseAmount = 1;
+      params.rawMarketData.minQuoteAmount = 2 ** 48 - 1;
       await expect(
-        zkLighter.connect(governorWallet).createMarket(1, 1, ethers.encodeBytes32String('BTC'), params),
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('BTC'), serializeCreatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidOrderQuoteLimit');
+    });
+  });
+
+  describe('CreateSpotMarket', function () {
+    it('should create orderbook and emit `CreateMarket` event', async () => {
+      const params = {
+        marketIndex: 2048n,
+        baseAssetIndex: 1n,
+        quoteAssetIndex: 3n,
+        quoteMultiplier: 1n,
+        sizeExtensionMultiplier: 1000000n,
+        quoteExtensionMultiplier: 1000000n,
+        takerFee: 2n,
+        makerFee: 1n,
+        minBaseAmount: 1n,
+        minQuoteAmount: 1n,
+        orderQuoteLimit: 1n,
+      };
+      await createSpotMarket(zkLighter, governorWallet, 3, 3, ethers.encodeBytes32String('ETH/USDC'), params);
+    });
+
+    it('should fail to create orderbook if assets are invalid', async () => {
+      const params = emptyCreateSpotMarket(2049);
+      params.rawMarketData.baseAssetIndex = 1n;
+      params.rawMarketData.quoteAssetIndex = 1n;
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketAssets');
+
+      params.rawMarketData.baseAssetIndex = 0n;
+      params.rawMarketData.quoteAssetIndex = 1n;
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidAssetIndex');
+
+      params.rawMarketData.baseAssetIndex = 1n;
+      params.rawMarketData.quoteAssetIndex = 59n;
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidAssetIndex');
+    });
+
+    it('should fail to create orderbook if market index is invalid', async () => {
+      const params = emptyCreateSpotMarket(255);
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to create orderbook if market index is perps', async () => {
+      const params = emptyCreateSpotMarket(1);
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to create orderbook if ExtensionMultipliers are invalid', async () => {
+      const params = emptyCreateSpotMarket(2049);
+      params.rawMarketData.baseAssetIndex = 1n;
+      params.rawMarketData.quoteAssetIndex = 3n;
+      params.rawMarketData.quoteExtensionMultiplier = 0n;
+      params.rawMarketData.sizeExtensionMultiplier = 1000000n;
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidExtensionMultiplier');
+
+      params.rawMarketData.quoteExtensionMultiplier = 1n;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidExtensionMultiplier');
+
+      params.rawMarketData.quoteExtensionMultiplier = 1000000n;
+      params.rawMarketData.sizeExtensionMultiplier = 0n;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidExtensionMultiplier');
+
+      params.rawMarketData.sizeExtensionMultiplier = 1n;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidExtensionMultiplier');
+    });
+
+    it('should fail to create orderbook if fees are invalid', async () => {
+      const params = emptyCreateSpotMarket(2049);
+      params.rawMarketData.baseAssetIndex = 1n;
+      params.rawMarketData.quoteAssetIndex = 3n;
+      params.rawMarketData.quoteExtensionMultiplier = 1000000n;
+      params.rawMarketData.sizeExtensionMultiplier = 1000000n;
+
+      params.rawMarketData.makerFee = 1_000_001n;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
+
+      params.rawMarketData.makerFee = 1n;
+      params.rawMarketData.takerFee = 1_000_001n;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
+    });
+
+    it('should fail to create orderbook if min amounts are invalid', async () => {
+      const params = emptyCreateSpotMarket(2049);
+      params.rawMarketData.baseAssetIndex = 1n;
+      params.rawMarketData.quoteAssetIndex = 3n;
+      params.rawMarketData.quoteExtensionMultiplier = 1000000n;
+      params.rawMarketData.sizeExtensionMultiplier = 1000000n;
+
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
       ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMinAmounts');
+
+      params.rawMarketData.minBaseAmount = 1;
+      params.rawMarketData.minQuoteAmount = 2 ** 48 - 1;
+      await expect(
+        zkLighter
+          .connect(governorWallet)
+          .createMarket(1, 1, ethers.encodeBytes32String('ETH/USDC'), serializeCreateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidOrderQuoteLimit');
     });
   });
 
   describe('UpdateMarket', function () {
     it('should update orderbook and emit `UpdateMarket` event', async () => {
-      await updateMarket(zkLighter, governorWallet, 10, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+      await updatePerpsMarket(zkLighter, governorWallet, {
+        marketIndex: 10n,
+        status: 1n,
+        takerFee: 0n,
+        makerFee: 0n,
+        liquidationFee: 0n,
+        minBaseAmount: 1n,
+        minQuoteAmount: 1n,
+        defaultInitialMarginFraction: 1n,
+        minInitialMarginFraction: 1n,
+        maintenanceMarginFraction: 1n,
+        closeOutMarginFraction: 1n,
+        interestRate: 1n,
+        fundingClampSmall: 1n,
+        fundingClampBig: 1n,
+        openInterestLimit: 1n,
+        orderQuoteLimit: 1n,
+      });
     });
 
     it('should fail to update orderbook if market index is invalid', async () => {
-      const params = emptyUpdateMarket(255, 0);
+      const params = emptyUpdatePerpsMarket(255, 0);
 
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarketIndex',
-      );
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to update orderbook if market index is spot', async () => {
+      const params = emptyUpdatePerpsMarket(2049, 0);
+
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
     });
 
     it('should fail to update orderbook if status is invalid', async () => {
-      const params = emptyUpdateMarket(1, 3);
+      const params = emptyUpdatePerpsMarket(1, 3);
 
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarketStatus',
-      );
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketStatus');
     });
 
     it('should fail to update orderbook if fees are invalid', async () => {
-      const params = emptyUpdateMarket(1, 0);
+      const params = emptyUpdatePerpsMarket(1, 0);
 
-      params.makerFee = 1_000_000 + 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidFeeAmount',
-      );
+      params.rawMarketData.makerFee = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
 
-      params.makerFee = 1;
-      params.takerFee = 1_000_000 + 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidFeeAmount',
-      );
+      params.rawMarketData.makerFee = 1;
+      params.rawMarketData.takerFee = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
 
-      params.makerFee = 1;
-      params.takerFee = 1;
-      params.liquidationFee = 1_000_000 + 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidFeeAmount',
-      );
+      params.rawMarketData.makerFee = 1;
+      params.rawMarketData.takerFee = 1;
+      params.rawMarketData.liquidationFee = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
     });
 
     it('should fail to update orderbook if margin requirements are invalid', async () => {
-      const params = emptyUpdateMarket(1, 0);
+      const params = emptyUpdatePerpsMarket(1, 0);
 
-      params.closeOutMarginFraction = 0;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarginFraction',
-      );
+      params.rawMarketData.closeOutMarginFraction = 0;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarginFraction',
-      );
+      params.rawMarketData.closeOutMarginFraction = 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarginFraction',
-      );
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarginFraction',
-      );
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
 
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 10_000 + 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMarginFraction',
-      );
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 10_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarginFraction');
     });
 
     it('should fail to update orderbook if interestRate is invalid', async () => {
-      const params = emptyUpdateMarket(1, 0);
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 1;
+      const params = emptyUpdatePerpsMarket(1, 0);
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 1;
 
-      params.interestRate = 1_000_000 + 1;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidInterestRate',
-      );
+      params.rawMarketData.interestRate = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidInterestRate');
     });
 
     it('should fail to update orderbook if min amounts are invalid', async () => {
-      const params = emptyUpdateMarket(1, 0);
-      params.closeOutMarginFraction = 1;
-      params.maintenanceMarginFraction = 1;
-      params.minInitialMarginFraction = 1;
-      params.defaultInitialMarginFraction = 1;
-      params.interestRate = 1;
+      const params = emptyUpdatePerpsMarket(1, 0);
+      params.rawMarketData.closeOutMarginFraction = 1;
+      params.rawMarketData.maintenanceMarginFraction = 1;
+      params.rawMarketData.minInitialMarginFraction = 1;
+      params.rawMarketData.defaultInitialMarginFraction = 1;
+      params.rawMarketData.interestRate = 1;
 
-      params.minBaseAmount = 2 ** 48;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMinAmounts',
-      );
+      params.rawMarketData.minBaseAmount = 2 ** 48 - 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMinAmounts');
 
-      params.minBaseAmount = 1;
-      params.minQuoteAmount = 2 ** 48;
-      await expect(zkLighter.connect(governorWallet).updateMarket(params)).to.be.revertedWithCustomError(
-        additionalZkLighter,
-        'AdditionalZkLighter_InvalidMinAmounts',
-      );
+      params.rawMarketData.minBaseAmount = 1;
+      params.rawMarketData.minQuoteAmount = 2 ** 48 - 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdatePerpsMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidOrderQuoteLimit');
+    });
+  });
+
+  describe('UpdateSpotMarket', function () {
+    it('should update orderbook and emit `UpdateMarket` event', async () => {
+      await updateSpotMarket(zkLighter, governorWallet, {
+        marketIndex: 2049n,
+        status: 1n,
+        takerFee: 0n,
+        makerFee: 0n,
+        minBaseAmount: 1n,
+        minQuoteAmount: 1n,
+        orderQuoteLimit: 1n,
+      });
+    });
+
+    it('should fail to update orderbook if market index is invalid', async () => {
+      const params = emptyUpdateSpotMarket(255, 0);
+
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to update orderbook if market index is perps', async () => {
+      const params = emptyUpdateSpotMarket(1, 0);
+
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketIndex');
+    });
+
+    it('should fail to update orderbook if status is invalid', async () => {
+      const params = emptyUpdateSpotMarket(2049, 3);
+
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMarketStatus');
+    });
+
+    it('should fail to update orderbook if fees are invalid', async () => {
+      const params = emptyUpdateSpotMarket(2049, 0);
+
+      params.rawMarketData.makerFee = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
+
+      params.rawMarketData.makerFee = 1;
+      params.rawMarketData.takerFee = 1_000_000 + 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidFeeAmount');
+    });
+
+    it('should fail to update orderbook if min amounts are invalid', async () => {
+      const params = emptyUpdateSpotMarket(2049, 0);
+
+      params.rawMarketData.minBaseAmount = 2 ** 48 - 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidMinAmounts');
+
+      params.rawMarketData.minBaseAmount = 1;
+      params.rawMarketData.minQuoteAmount = 2 ** 48 - 1;
+      await expect(
+        zkLighter.connect(governorWallet).updateMarket(serializeUpdateSpotMarket(params)),
+      ).to.be.revertedWithCustomError(additionalZkLighter, 'AdditionalZkLighter_InvalidOrderQuoteLimit');
     });
   });
 
@@ -1006,7 +1479,7 @@ describe('ZkLighter Tests', function () {
       const openPriorityRequestCount = await zkLighter.openPriorityRequestCount();
       expect(openPriorityRequestCount).to.equal(2); // 1 deposit + 1 create order
 
-      await incrementBlockstampBySeconds(20 * 24 * 60 * 60); // 20 days
+      await incrementBlockstampBySeconds(15 * 24 * 60 * 60); // 15 days
       await advanceBlocks(10);
 
       let desertModeActivated = await zkLighter.desertMode();
@@ -1040,7 +1513,7 @@ describe('ZkLighter Tests', function () {
       const openPriorityRequestCount = await zkLighter.openPriorityRequestCount();
       expect(openPriorityRequestCount).to.equal(2); // 1 deposit + 1 create order
 
-      await incrementBlockstampBySeconds(17 * 24 * 60 * 60); // 17 days
+      await incrementBlockstampBySeconds(13 * 24 * 60 * 60); // 13 days
       await advanceBlocks(10);
 
       let desertModeActivated = await zkLighter.desertMode();

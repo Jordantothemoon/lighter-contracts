@@ -14,4 +14,8 @@ contract GovernanceTest is Governance {
   function overrideNetworkGovernor(address _newGovernor) external {
     networkGovernor = _newGovernor;
   }
+
+  function overrideUSDCAddress(IERC20 _usdcAddress) external {
+    usdc = _usdcAddress;
+  }
 }

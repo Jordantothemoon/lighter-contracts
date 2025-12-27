@@ -27,6 +27,7 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
   // * the {_disableInitializers} function in the constructor to automatically lock it when it is deployed: */
   constructor() {
     zklighterImplementation = address(this);
+
     _disableInitializers();
   }
 
@@ -79,6 +80,8 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
     stateRoot = _genesisStateRoot;
     storedBatchHashes[0] = hashStoredBatchInfo(genesisBatchInfo);
 
+    _registerDefaultAssetConfigs();
+
     lastAccountIndex = 2; // First 3 accounts are reserved for system accounts
   }
 
@@ -92,7 +95,7 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
     // Commit to the initialization parameters to ensure parameters are known at the time of upgrade initialization
     bytes32 upgradeParametersHash = keccak256(upgradeParameters);
     // Commits to 0 address for _additionalZkLighter, _desertVerifier and _stateRootUpgradeVerifier
-    bytes32 initializationParametersCommitment = 0x46700b4d40ac5c35af2c22dda2787a91eb567b06c924a8fb8ae9a05b20c08c21;
+    bytes32 initializationParametersCommitment = 0x991dedd197f37f42e760755ddb47d4a7485c70bca50bcefbc75811661c2a6219;
     if (upgradeParametersHash != initializationParametersCommitment) {
       revert ZkLighter_InvalidUpgradeParameters();
     }
@@ -124,13 +127,158 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
     }
   }
 
+  function _registerDefaultAssetConfigs() internal {
+    address ethAddress = address(0);
+    uint56 ethExtensionMultiplier = 100;
+    uint128 ethTickSize = 10 ** 10; // 0.00000001 ETH
+    assetConfigs[NATIVE_ASSET_INDEX] = AssetConfig({
+      tokenAddress: ethAddress,
+      withdrawalsEnabled: 1,
+      extensionMultiplier: ethExtensionMultiplier,
+      tickSize: ethTickSize,
+      depositCapTicks: MAX_DEPOSIT_CAP_TICKS,
+      minDepositTicks: 100_000 // 0.001 ETH
+    });
+    tokenToAssetIndex[ethAddress] = NATIVE_ASSET_INDEX;
+    emit RegisterAssetConfig(NATIVE_ASSET_INDEX, ethAddress, 1, ethExtensionMultiplier, ethTickSize, MAX_DEPOSIT_CAP_TICKS, 100_000);
+
+    address usdcAddress = address(governance.usdc());
+    uint56 usdcExtensionMultiplier = 1_000_000;
+    uint128 usdcTickSize = 1;
+    assetConfigs[USDC_ASSET_INDEX] = AssetConfig({
+      tokenAddress: usdcAddress,
+      withdrawalsEnabled: 1,
+      extensionMultiplier: usdcExtensionMultiplier,
+      tickSize: usdcTickSize,
+      depositCapTicks: MAX_DEPOSIT_CAP_TICKS,
+      minDepositTicks: 1_000_000 // 1 USDC
+    });
+    tokenToAssetIndex[usdcAddress] = USDC_ASSET_INDEX;
+    emit RegisterAssetConfig(USDC_ASSET_INDEX, usdcAddress, 1, usdcExtensionMultiplier, usdcTickSize, MAX_DEPOSIT_CAP_TICKS, 1_000_000);
+  }
+
   /// @inheritdoc IZkLighter
-  function deposit(uint64 _amount, address _to) external {
+  function registerAssetConfig(
+    uint16 assetIndex,
+    address tokenAddress,
+    uint8 withdrawalsEnabled,
+    uint56 extensionMultiplier,
+    uint128 tickSize,
+    uint64 depositCapTicks,
+    uint64 minDepositTicks
+  ) external nonReentrant onlyActive {
+    governance.requireGovernor(msg.sender);
+
+    if (assetIndex == NATIVE_ASSET_INDEX || assetConfigs[assetIndex].tokenAddress != address(0)) {
+      revert ZkLighter_InvalidAssetIndex();
+    }
+    if (assetIndex < MIN_ASSET_INDEX || assetIndex > MAX_ASSET_INDEX) {
+      revert ZkLighter_InvalidAssetIndex();
+    }
+    if (tokenAddress == address(0) || tokenToAssetIndex[tokenAddress] != 0) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (withdrawalsEnabled != 0 && withdrawalsEnabled != 1) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (!_hasCode(tokenAddress)) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (tickSize == 0 || depositCapTicks == 0 || minDepositTicks == 0) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (tickSize > MAX_TICK_SIZE || depositCapTicks > MAX_DEPOSIT_CAP_TICKS || minDepositTicks > depositCapTicks) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    uint128 extendedDepositCapTicks = uint128(extensionMultiplier) * uint128(depositCapTicks);
+    if (
+      extensionMultiplier == 0 || extensionMultiplier > MAX_ASSET_EXTENSION_MULTIPLIER || extendedDepositCapTicks > MAX_EXTENDED_DEPOSIT_CAP_TICKS
+    ) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    assetConfigs[assetIndex] = AssetConfig({
+      tokenAddress: tokenAddress,
+      withdrawalsEnabled: withdrawalsEnabled,
+      extensionMultiplier: extensionMultiplier,
+      tickSize: tickSize,
+      depositCapTicks: depositCapTicks,
+      minDepositTicks: minDepositTicks
+    });
+    tokenToAssetIndex[tokenAddress] = assetIndex;
+    emit RegisterAssetConfig(assetIndex, tokenAddress, withdrawalsEnabled, extensionMultiplier, tickSize, depositCapTicks, minDepositTicks);
+  }
+
+  /// @inheritdoc IZkLighter
+  function updateAssetConfig(
+    uint16 assetIndex,
+    uint8 withdrawalsEnabled,
+    uint64 depositCapTicks,
+    uint64 minDepositTicks
+  ) external nonReentrant onlyActive {
+    governance.requireGovernor(msg.sender);
+
+    AssetConfig memory config = assetConfigs[assetIndex];
+    if (assetIndex != NATIVE_ASSET_INDEX && config.tokenAddress == address(0)) {
+      revert ZkLighter_InvalidAssetIndex();
+    }
+
+    if (withdrawalsEnabled != 0 && withdrawalsEnabled != 1) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    // Withdrawals can not be disabled if they are enabled already
+    // Only transition allowed for this parameter is from disabled to enabled
+    if (withdrawalsEnabled == 0 && config.withdrawalsEnabled == 1) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (depositCapTicks == 0 || minDepositTicks == 0) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    if (depositCapTicks > MAX_DEPOSIT_CAP_TICKS || minDepositTicks > depositCapTicks) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    uint128 extendedDepositCapTicks = uint128(config.extensionMultiplier) * uint128(depositCapTicks);
+    if (extendedDepositCapTicks > MAX_EXTENDED_DEPOSIT_CAP_TICKS) {
+      revert ZkLighter_InvalidAssetConfigParams();
+    }
+
+    assetConfigs[assetIndex] = AssetConfig({
+      tokenAddress: config.tokenAddress,
+      withdrawalsEnabled: withdrawalsEnabled,
+      extensionMultiplier: config.extensionMultiplier,
+      tickSize: config.tickSize,
+      depositCapTicks: depositCapTicks,
+      minDepositTicks: minDepositTicks
+    });
+    emit UpdateAssetConfig(assetIndex, withdrawalsEnabled, depositCapTicks, minDepositTicks);
+  }
+
+  /// @inheritdoc IZkLighter
+  function registerAsset(uint8 _l1Decimals, uint8 _decimals, bytes32 _symbol, TxTypes.RegisterAsset calldata _params) external {
     delegateAdditional();
   }
 
   /// @inheritdoc IZkLighter
-  function depositBatch(uint64[] calldata _amounts, address[] calldata _to, uint48[] calldata _accountIndex) external {
+  function updateAsset(TxTypes.UpdateAsset calldata _params) external {
+    delegateAdditional();
+  }
+
+  /// @inheritdoc IZkLighter
+  function deposit(address _to, uint16 _assetIndex, TxTypes.RouteType _routeType, uint256 _amount) external payable {
+    delegateAdditional();
+  }
+
+  /// @inheritdoc IZkLighter
+  function depositBatch(uint64[] calldata _amount, address[] calldata _to, uint48[] calldata _accountIndex) external {
     delegateAdditional();
   }
 
@@ -150,17 +298,17 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
   }
 
   /// @inheritdoc IZkLighter
-  function cancelAllOrders(uint48 _accountIndex) public {
+  function cancelAllOrders(uint48 _accountIndex) external {
     delegateAdditional();
   }
 
   /// @inheritdoc IZkLighter
-  function withdraw(uint48 _accountIndex, uint64 _usdcAmount) external {
+  function withdraw(uint48 _accountIndex, uint16 _assetIndex, TxTypes.RouteType _routeType, uint64 _baseAmount) external {
     delegateAdditional();
   }
 
   /// @inheritdoc IZkLighter
-  function createOrder(uint48 _accountIndex, uint8 _marketIndex, uint48 _baseAmount, uint32 _price, uint8 _isAsk, uint8 _orderType) external {
+  function createOrder(uint48 _accountIndex, uint16 _marketIndex, uint48 _baseAmount, uint32 _price, uint8 _isAsk, uint8 _orderType) external {
     delegateAdditional();
   }
 
@@ -170,23 +318,101 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
   }
 
   /// @inheritdoc IZkLighter
-  function revertBatches(StoredBatchInfo[] memory _batchesToRevert, StoredBatchInfo memory _remainingBatch) external {
-    delegateAdditional();
-  }
-
-  /// @inheritdoc IZkLighter
   function updateStateRoot(StoredBatchInfo calldata _lastStoredBatch, bytes32 _stateRoot, bytes32 _validiumRoot, bytes calldata proof) external {
     delegateAdditional();
   }
 
-  /// @inheritdoc IZkLighter
-  function performDesert(uint48 _accountIndex, uint48 _masterAccountIndex, uint128 _totalAccountValue, bytes calldata proof) external {
-    delegateAdditional();
+  function createExitCommitment(
+    uint256 stateRoot,
+    uint48 _accountIndex,
+    address _l1Address,
+    uint16 _assetIndex,
+    uint128 _totalBaseAmount
+  ) internal pure returns (bytes32) {
+    return keccak256(abi.encodePacked(stateRoot, _accountIndex, _l1Address, _assetIndex, _totalBaseAmount));
+  }
+
+  /// @notice Performs exit from zkLighter in desert mode
+  function performDesert(
+    uint48 _accountIndex,
+    address _l1Address,
+    uint16 _assetIndex,
+    uint128 _totalBaseAmount,
+    bytes calldata proof
+  ) external nonReentrant {
+    // Must be in desert mode
+    if (!desertMode) {
+      revert ZkLighter_DesertModeInactive();
+    }
+
+    if (accountPerformedDesertForAsset[_assetIndex][_accountIndex]) {
+      revert ZkLighter_AccountAlreadyPerformedDesertForAsset();
+    }
+
+    uint256[] memory inputs = new uint256[](1);
+    bytes32 commitment = createExitCommitment(uint256(stateRoot), _accountIndex, _l1Address, _assetIndex, _totalBaseAmount);
+    inputs[0] = uint256(commitment) % BN254_MODULUS;
+    bool success = desertVerifier.Verify(proof, inputs);
+    if (!success) {
+      revert ZkLighter_DesertVerifyProofFailed();
+    }
+
+    increaseBalanceToWithdraw(getAccountIndexFromAddress(_l1Address), _assetIndex, _totalBaseAmount);
+    accountPerformedDesertForAsset[_assetIndex][_accountIndex] = true;
   }
 
   /// @inheritdoc IZkLighter
-  function cancelOutstandingDepositsForDesertMode(uint64 _n, bytes[] memory _depositsPubData) external {
-    delegateAdditional();
+  function cancelOutstandingDepositsForDesertMode(uint64 _n, bytes[] memory _priorityPubData) external nonReentrant {
+    // Must be in desert mode
+    if (!desertMode) {
+      revert ZkLighter_DesertModeInactive();
+    }
+
+    if (openPriorityRequestCount == 0 || _n == 0) {
+      revert ZkLighter_NoOutstandingDepositsForCancelation();
+    }
+
+    if (_n > openPriorityRequestCount || _n != _priorityPubData.length) {
+      revert ZkLighter_InvalidParamsForCancelOutstandingDeposits();
+    }
+
+    uint64 startIndex = executedPriorityRequestCount;
+
+    bytes32 pubDataPrefixHash = bytes32(0);
+    if (executedPriorityRequestCount > 0) {
+      pubDataPrefixHash = priorityRequests[executedPriorityRequestCount - 1].prefixHash;
+    }
+
+    uint64 currentPubDataIdx = 0;
+    for (uint64 id = startIndex; id < startIndex + _n; ++id) {
+      if (_priorityPubData[currentPubDataIdx].length > MAX_PRIORITY_REQUEST_PUBDATA_SIZE || _priorityPubData[currentPubDataIdx].length == 0) {
+        revert ZkLighter_InvalidParamsForCancelOutstandingDeposits();
+      }
+
+      bytes memory paddedPubData = new bytes(MAX_PRIORITY_REQUEST_PUBDATA_SIZE);
+      for (uint256 i = 0; i < _priorityPubData[currentPubDataIdx].length; ++i) {
+        paddedPubData[i] = _priorityPubData[currentPubDataIdx][i];
+      }
+
+      pubDataPrefixHash = keccak256(abi.encodePacked(pubDataPrefixHash, paddedPubData));
+      if (pubDataPrefixHash != priorityRequests[id].prefixHash) {
+        revert ZkLighter_DepositPubdataHashMismatch();
+      }
+
+      if (uint8(_priorityPubData[currentPubDataIdx][0]) == TxTypes.PriorityPubDataTypeL1Deposit) {
+        if (_priorityPubData[currentPubDataIdx].length != TxTypes.DEPOSIT_PUB_DATA_SIZE) {
+          revert ZkLighter_DepositPubdataHashMismatch();
+        }
+        bytes memory depositPubdata = _priorityPubData[currentPubDataIdx];
+        (uint48 accountIndex, uint16 assetIndex, uint64 baseAmount) = TxTypes.readDepositForDesertMode(depositPubdata);
+        increaseBalanceToWithdraw(accountIndex, assetIndex, baseAmount);
+      }
+
+      ++currentPubDataIdx;
+    }
+
+    openPriorityRequestCount -= _n;
+    executedPriorityRequestCount += _n;
   }
 
   /// @inheritdoc IZkLighter
@@ -315,22 +541,34 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
     if (storedBatchHashes[batch.batchNumber] != hashStoredBatchInfo(batch)) {
       revert ZkLighter_StoredBatchInfoMismatch();
     }
-    if (_onChainOperationsPubData.length % TxTypes.WithdrawLogSize != 0) {
-      revert ZkLighter_InvalidPubDataLength();
-    }
     bytes32 onChainPubDataHash = bytes32(0);
-    for (uint256 i = 0; i < _onChainOperationsPubData.length; ) {
+    uint256 len = _onChainOperationsPubData.length;
+    for (uint256 i = 0; i < len; ) {
       uint8 logType;
       (, logType) = Bytes.readUInt8(_onChainOperationsPubData, i);
-      if (logType != uint8(TxTypes.OnChainPubDataType.Withdraw)) {
+      if (logType == uint8(TxTypes.OnChainPubDataType.Withdraw)) {
+        if (len - i < TxTypes.WithdrawLogSize) {
+          revert ZkLighter_InvalidPubDataLength();
+        }
+        (TxTypes.Withdraw memory _tx, uint256 _offset) = TxTypes.readWithdrawOnChainLog(_onChainOperationsPubData, i);
+        increaseBalanceToWithdraw(_tx.masterAccountIndex, _tx.assetIndex, _tx.baseAmount);
+        onChainPubDataHash = keccak256(
+          abi.encodePacked(onChainPubDataHash, TxTypes.OnChainPubDataType.Withdraw, _tx.masterAccountIndex, _tx.assetIndex, _tx.baseAmount)
+        );
+        i = _offset;
+      } else if (logType == uint8(TxTypes.OnChainPubDataType.USDCWithdraw)) {
+        if (len - i < TxTypes.USDCWithdrawLogSize) {
+          revert ZkLighter_InvalidPubDataLength();
+        }
+        (TxTypes.USDCWithdraw memory _tx, uint256 _offset) = TxTypes.readUSDCWithdrawOnChainLog(_onChainOperationsPubData, i);
+        increaseBalanceToWithdraw(_tx.masterAccountIndex, USDC_ASSET_INDEX, _tx.usdcAmount);
+        onChainPubDataHash = keccak256(
+          abi.encodePacked(onChainPubDataHash, TxTypes.OnChainPubDataType.USDCWithdraw, _tx.masterAccountIndex, _tx.usdcAmount)
+        );
+        i = _offset;
+      } else {
         revert ZkLighter_InvalidPubDataType();
       }
-      (TxTypes.Withdraw memory _tx, uint256 _offset) = TxTypes.readWithdrawOnChainLog(_onChainOperationsPubData, i);
-      increaseBalanceToWithdraw(_tx.masterAccountIndex, _tx.usdcAmount);
-      i = _offset;
-      onChainPubDataHash = keccak256(
-        abi.encodePacked(onChainPubDataHash, TxTypes.OnChainPubDataType.Withdraw, _tx.masterAccountIndex, _tx.usdcAmount)
-      );
     }
     if (onChainPubDataHash != batch.onChainOperationsHash) {
       revert ZkLighter_OnChainOperationsHashMismatch();
@@ -378,8 +616,62 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
   }
 
   /// @inheritdoc IZkLighter
-  function transferERC20(IERC20 _token, address _to, uint128 _amount, uint128 _maxAmount) external returns (uint128 withdrawnAmount) {
-    // Can be called only from this contract as one "external" call (to revert all this function state changes if it is needed)
+  function revertBatches(StoredBatchInfo[] memory _batchesToRevert, StoredBatchInfo memory _remainingBatch) external nonReentrant onlyActive {
+    governance.isActiveValidator(msg.sender);
+
+    for (uint32 i = 0; i < _batchesToRevert.length; ++i) {
+      StoredBatchInfo memory storedBatchInfo = _batchesToRevert[i];
+      if (storedBatchInfo.endBlockNumber == 0) {
+        revert ZkLighter_CannotRevertGenesisBatch();
+      }
+      if (storedBatchHashes[committedBatchesCount] != hashStoredBatchInfo(storedBatchInfo)) {
+        revert ZkLighter_StoredBatchInfoMismatch();
+      }
+      if (storedBatchInfo.batchNumber != committedBatchesCount) {
+        revert ZkLighter_StoredBatchInfoMismatch();
+      }
+      delete storedBatchHashes[committedBatchesCount];
+      if (storedBatchInfo.onChainOperationsHash != bytes32(0)) {
+        if (pendingOnChainBatchesCount == 0) {
+          revert ZkLighter_CannotRevertExecutedBatch();
+        }
+        uint64 totalOnChainBatchesCount = executedOnChainBatchesCount + pendingOnChainBatchesCount;
+        if (onChainExecutionQueue[totalOnChainBatchesCount - 1].batchNumber != storedBatchInfo.batchNumber) {
+          revert ZkLighter_StoredBatchInfoMismatch();
+        }
+        // Remove the batch from the execution queue
+        delete onChainExecutionQueue[totalOnChainBatchesCount - 1];
+        pendingOnChainBatchesCount--;
+      }
+      committedBatchesCount--;
+      committedPriorityRequestCount -= storedBatchInfo.priorityRequestCount;
+      if (storedBatchInfo.batchNumber <= verifiedBatchesCount) {
+        verifiedBatchesCount--;
+        verifiedPriorityRequestCount -= storedBatchInfo.priorityRequestCount;
+      }
+    }
+
+    // Can not revert executed batch or priority requests
+    if (committedBatchesCount < executedBatchesCount || committedPriorityRequestCount < executedPriorityRequestCount) {
+      revert ZkLighter_CannotRevertExecutedBatch();
+    }
+
+    // Make sure the remaining batch is the last batch
+    if (storedBatchHashes[committedBatchesCount] != hashStoredBatchInfo(_remainingBatch)) {
+      revert ZkLighter_StoredBatchInfoMismatch();
+    }
+    // If we reverted verified batches, update the last verified variables for lazy update on executions
+    if (_remainingBatch.batchNumber == verifiedBatchesCount) {
+      lastVerifiedStateRoot = _remainingBatch.stateRoot;
+      lastVerifiedValidiumRoot = _remainingBatch.validiumRoot;
+      lastVerifiedEndBlockNumber = _remainingBatch.endBlockNumber;
+    }
+    emit BatchesRevert(committedBatchesCount);
+  }
+
+  /// @inheritdoc IZkLighter
+  function transferERC20(IERC20 _token, address _to, uint256 _amount, uint256 _maxAmount) external returns (uint256) {
+    // can be called only from this contract as one "external" call (to revert all this function state changes if it is needed)
     if (msg.sender != address(this)) {
       revert ZkLighter_OnlyZkLighter();
     }
@@ -390,34 +682,88 @@ contract ZkLighter is IZkLighter, Storage, ReentrancyGuardUpgradeable, Extendabl
     if (balanceDiff > _maxAmount) {
       revert ZkLighter_RollUpBalanceBiggerThanMaxAmount();
     }
-    return SafeCast.toUint128(balanceDiff);
-  }
-
-  function increaseBalanceToWithdraw(uint48 _masterAccountIndex, uint128 _amount) internal {
-    uint128 balance = pendingBalance[_masterAccountIndex].balanceToWithdraw;
-    pendingBalance[_masterAccountIndex] = PendingBalance(balance + _amount, FILLED_GAS_RESERVE_VALUE);
+    return balanceDiff;
   }
 
   /// @inheritdoc IZkLighter
-  function getPendingBalance(address _owner) public view returns (uint128) {
+  function transferETH(address _to, uint256 _amount) external returns (uint256) {
+    // can be called only from this contract as one "external" call (to revert all this function state changes if it is needed)
+    if (msg.sender != address(this)) {
+      revert ZkLighter_OnlyZkLighter();
+    }
+    (bool success, ) = _to.call{value: _amount}("");
+    if (!success) {
+      revert ZkLighter_ETHTransferFailed();
+    }
+    return _amount;
+  }
+
+  function increaseBalanceToWithdraw(uint48 _masterAccountIndex, uint16 _assetIndex, uint128 _baseAmount) internal {
+    uint128 balance = pendingAssetBalances[_assetIndex][_masterAccountIndex].balanceToWithdraw;
+    pendingAssetBalances[_assetIndex][_masterAccountIndex] = PendingBalance(balance + _baseAmount, FILLED_GAS_RESERVE_VALUE);
+  }
+
+  /// @inheritdoc IZkLighter
+  function getPendingBalance(address _owner, uint16 _assetIndex) external view returns (uint128) {
     uint48 _masterAccountIndex = getAccountIndexFromAddress(_owner);
-    return pendingBalance[_masterAccountIndex].balanceToWithdraw;
+    return pendingAssetBalances[_assetIndex][_masterAccountIndex].balanceToWithdraw;
+  }
+
+  function getPendingBalanceLegacy(address _owner) public view returns (uint128) {
+    uint48 _masterAccountIndex = getAccountIndexFromAddress(_owner);
+    return DEPRECATED_pendingBalance[_masterAccountIndex].balanceToWithdraw;
   }
 
   /// @inheritdoc IZkLighter
-  function withdrawPendingBalance(address _owner, uint128 _amount) external nonReentrant {
+  function withdrawPendingBalance(address _owner, uint16 _assetIndex, uint128 _baseAmount) external nonReentrant {
     uint48 masterAccountIndex = getAccountIndexFromAddress(_owner);
-    uint128 balance = pendingBalance[masterAccountIndex].balanceToWithdraw;
-    if (_amount > balance || _amount == 0) {
+    uint128 baseBalance = pendingAssetBalances[_assetIndex][masterAccountIndex].balanceToWithdraw;
+    if (_baseAmount > baseBalance || _baseAmount == 0) {
+      revert ZkLighter_InvalidWithdrawAmount();
+    }
+
+    AssetConfig memory assetConfig = assetConfigs[_assetIndex];
+    if (_assetIndex != NATIVE_ASSET_INDEX && assetConfig.tokenAddress == address(0)) {
+      revert ZkLighter_InvalidAssetIndex();
+    }
+    uint256 amount = uint256(_baseAmount) * uint256(assetConfig.tickSize);
+    uint256 balance = uint256(baseBalance) * uint256(assetConfig.tickSize);
+    // We will allow withdrawals of `value` such that:
+    // `value` <= user pending balance
+    // `value` can be bigger then `_amount` requested if token stakes fee from sender in addition to `_amount` requested
+    uint256 transferredAmount;
+    if (_assetIndex == NATIVE_ASSET_INDEX) {
+      transferredAmount = this.transferETH(_owner, amount);
+    } else {
+      transferredAmount = this.transferERC20(IERC20(assetConfig.tokenAddress), _owner, amount, balance);
+    }
+    if (transferredAmount % assetConfig.tickSize != 0) {
+      revert ZkLighter_TransferredAmountNotMultipleOfTickSize();
+    }
+
+    // update balanceToWithdraw by subtracting the actual amount that was sent
+    uint256 transferredBaseAmount = transferredAmount / assetConfig.tickSize;
+    uint128 transferredBaseAmount128 = SafeCast.toUint128(transferredBaseAmount);
+    pendingAssetBalances[_assetIndex][masterAccountIndex].balanceToWithdraw = baseBalance - transferredBaseAmount128;
+    emit WithdrawPending(_owner, _assetIndex, transferredBaseAmount128);
+  }
+
+  /// @inheritdoc IZkLighter
+  function withdrawPendingBalanceLegacy(address _owner, uint128 _baseAmount) external nonReentrant {
+    uint48 masterAccountIndex = getAccountIndexFromAddress(_owner);
+    uint128 baseBalance = DEPRECATED_pendingBalance[masterAccountIndex].balanceToWithdraw;
+    if (_baseAmount > baseBalance || _baseAmount == 0) {
       revert ZkLighter_InvalidWithdrawAmount();
     }
     // We will allow withdrawals of `value` such that:
     // `value` <= user pending balance
     // `value` can be bigger then `_amount` requested if token takes fee from sender in addition to `_amount` requested
-    uint128 amount = this.transferERC20(governance.usdc(), _owner, _amount, balance);
+    uint256 amount = this.transferERC20(governance.usdc(), _owner, uint256(_baseAmount), uint256(baseBalance));
+    uint128 transferredBaseAmount128 = SafeCast.toUint128(amount);
+
     // Update balanceToWithdraw by subtracting the actual amount that was sent
-    pendingBalance[masterAccountIndex].balanceToWithdraw = balance - amount;
-    emit WithdrawPending(_owner, amount);
+    DEPRECATED_pendingBalance[masterAccountIndex].balanceToWithdraw = baseBalance - transferredBaseAmount128;
+    emit WithdrawPending(_owner, USDC_ASSET_INDEX, transferredBaseAmount128);
   }
 
   /// @inheritdoc IZkLighter

@@ -57,6 +57,12 @@ interface IZkLighter is IEvents {
   /// @notice Thrown when execute batches is called with input length greater than pending count
   error ZkLighter_ExecuteInputLengthGreaterThanPendingCount();
 
+  /// @notice Thrown when revert batches is called on an already executed batch
+  error ZkLighter_CannotRevertExecutedBatch();
+
+  /// @notice Thrown when revert batches is called on the genesis batch
+  error ZkLighter_CannotRevertGenesisBatch();
+
   /// @notice Thrown when given withdraw pubdata for a batch has invalid length
   error ZkLighter_InvalidPubDataLength();
 
@@ -78,11 +84,17 @@ interface IZkLighter is IEvents {
   /// @notice Thrown when requested amount is greater than the pending balance
   error ZkLighter_InvalidWithdrawAmount();
 
+  /// @notice Thrown when the transferred amount is not a multiple of the tick size
+  error ZkLighter_TransferredAmountNotMultipleOfTickSize();
+
   /// @notice Thrown when upgrade address(this) is the implementation
   error ZkLighter_OnlyProxyCanCallUpgrade();
 
   /// @notice Thrown when a restricted function which can be called only from zkLighterProxy is called by other address
   error ZkLighter_OnlyZkLighter();
+
+  /// @notice thrown when ETH transfer fails
+  error ZkLighter_ETHTransferFailed();
 
   /// @notice Thrown when rollup balance difference (before and after transfer) is bigger than `_maxAmount`
   error ZkLighter_RollUpBalanceBiggerThanMaxAmount();
@@ -123,6 +135,22 @@ interface IZkLighter is IEvents {
   /// @notice Thrown when the blob commitment parameters are invalid
   error ZkLighter_InvalidBlobCommitmentParams();
 
+  error ZkLighter_InvalidAssetIndex();
+
+  error ZkLighter_InvalidAssetConfigParams();
+
+  error ZkLighter_DesertModeInactive();
+
+  error ZkLighter_DesertVerifyProofFailed();
+
+  error ZkLighter_AccountAlreadyPerformedDesertForAsset();
+
+  error ZkLighter_NoOutstandingDepositsForCancelation();
+
+  error ZkLighter_InvalidParamsForCancelOutstandingDeposits();
+
+  error ZkLighter_DepositPubdataHashMismatch();
+
   /// @notice Thrown when the number of blobs in a batch exceeds the maximum allowed
   error ZkLighter_InvalidBlobCount(uint256);
 
@@ -133,32 +161,72 @@ interface IZkLighter is IEvents {
 
   /// @notice Performs the Desert Exit, can be called only when desertMode is active
   /// @param _accountIndex Account index of the user who is performing the desert exit
-  /// @param _masterAccountIndex Master account index of the user who is performing the desert exit
-  /// @param _totalAccountValue Total value of the account in USDC
+  /// @param _l1Address L1 address of the user who is performing the desert exit
+  /// @param _assetIndex Asset index of the asset to be exited
+  /// @param _totalBaseAmount Total base balance of the user for the asset to be exited
   /// @param proof Proof for the user assets
-  function performDesert(uint48 _accountIndex, uint48 _masterAccountIndex, uint128 _totalAccountValue, bytes calldata proof) external;
+  function performDesert(uint48 _accountIndex, address _l1Address, uint16 _assetIndex, uint128 _totalBaseAmount, bytes calldata proof) external;
 
   /// @notice Cancels outstanding deposits, can be called only when desertMode is active
   /// @param _n Number of outstanding priority requests to be cancelled
-  /// @param _depositsPubData Array of outstanding deposits to be cancelled
-  function cancelOutstandingDepositsForDesertMode(uint64 _n, bytes[] memory _depositsPubData) external;
+  /// @param _priorityPubData Array of outstanding priority requests to be cancelled
+  function cancelOutstandingDepositsForDesertMode(uint64 _n, bytes[] memory _priorityPubData) external;
 
-  /// @notice Deposit USDC to Lighter
-  /// @param _amount USDC Token amount
+  /// @notice Deposit to Lighter
+  /// @param _assetIndex Asset index
+  /// @param _routeType Route type
+  /// @param _amount Token amount
   /// @param _to The receiver L1 address
-  function deposit(uint64 _amount, address _to) external;
+  function deposit(address _to, uint16 _assetIndex, TxTypes.RouteType _routeType, uint256 _amount) external payable;
 
   /// @notice Deposit USDC to Lighter for multiple users
-  /// @param _amounts Array of USDC Token amounts
+  /// @param _amount Array of USDC Token amounts
   /// @param _to Array of receiver L1 addresses
   /// @param _accountIndex Array of account index values, will be used in the future
-  function depositBatch(uint64[] calldata _amounts, address[] calldata _to, uint48[] calldata _accountIndex) external;
+  function depositBatch(uint64[] calldata _amount, address[] calldata _to, uint48[] calldata _accountIndex) external;
 
   /// @notice Change public key of a Lighter account
   /// @param _accountIndex Account index
   /// @param _apiKeyIndex API key index
   /// @param _pubKey New public key (40 bytes)
   function changePubKey(uint48 _accountIndex, uint8 _apiKeyIndex, bytes calldata _pubKey) external;
+
+  /// @notice Register a new asset config
+  /// @param assetIndex Asset index
+  /// @param tokenAddress Token address
+  /// @param withdrawalsEnabled Withdrawals enabled flag
+  /// @param extensionMultiplier Extension multiplier of the asset
+  /// @param tickSize Tick size of the asset
+  /// @param depositCapTicks Deposit cap in ticks
+  /// @param minDepositTicks Minimum deposit in ticks
+  /// @dev This function is only callable by the governor
+  function registerAssetConfig(
+    uint16 assetIndex,
+    address tokenAddress,
+    uint8 withdrawalsEnabled,
+    uint56 extensionMultiplier,
+    uint128 tickSize,
+    uint64 depositCapTicks,
+    uint64 minDepositTicks
+  ) external;
+
+  /// @notice Update existing asset config
+  /// @param assetIndex Asset index
+  /// @param withdrawalsEnabled Withdrawals enabled flag
+  /// @param depositCapTicks Deposit cap in ticks
+  /// @param minDepositTicks Minimum deposit in ticks
+  /// @dev This function is only callable by the governor
+  function updateAssetConfig(uint16 assetIndex, uint8 withdrawalsEnabled, uint64 depositCapTicks, uint64 minDepositTicks) external;
+
+  /// @notice Register a new asset to Lighter
+  /// @param _decimals Number of decimals of the asset
+  /// @param _symbol Symbol of the asset
+  /// @param _params Asset parameters
+  function registerAsset(uint8 _l1Decimals, uint8 _decimals, bytes32 _symbol, TxTypes.RegisterAsset calldata _params) external;
+
+  /// @notice Update existing asset in Lighter
+  /// @param _params Asset parameters to update
+  function updateAsset(TxTypes.UpdateAsset calldata _params) external;
 
   /// @notice Create new market and an order book
   /// @param _size_decimals [metadata] Number of decimals to represent size of an order in the order book
@@ -175,10 +243,12 @@ interface IZkLighter is IEvents {
   /// @param _accountIndex Account index
   function cancelAllOrders(uint48 _accountIndex) external;
 
-  /// @notice Withdraw USDC from Lighter
+  /// @notice Withdraw from Lighter
   /// @param _accountIndex Account index
-  /// @param _usdcAmount Amount to withdraw
-  function withdraw(uint48 _accountIndex, uint64 _usdcAmount) external;
+  /// @param _assetIndex Asset index
+  /// @param _routeType Route type
+  /// @param _baseAmount Amount to withdraw
+  function withdraw(uint48 _accountIndex, uint16 _assetIndex, TxTypes.RouteType _routeType, uint64 _baseAmount) external;
 
   /// @notice Create an order for a Lighter account
   /// @param _accountIndex Account index
@@ -187,7 +257,7 @@ interface IZkLighter is IEvents {
   /// @param _price Price of the order
   /// @param _isAsk Flag to indicate if the order is ask or bid
   /// @param _orderType Order type
-  function createOrder(uint48 _accountIndex, uint8 _marketIndex, uint48 _baseAmount, uint32 _price, uint8 _isAsk, uint8 _orderType) external;
+  function createOrder(uint48 _accountIndex, uint16 _marketIndex, uint48 _baseAmount, uint32 _price, uint8 _isAsk, uint8 _orderType) external;
 
   /// @notice Burn shares of an account in a public pool
   /// @param _accountIndex Account index
@@ -197,16 +267,28 @@ interface IZkLighter is IEvents {
 
   /// @notice Withdraws tokens from ZkLighter contract to the owner
   /// @param _owner Account address
-  /// @param _amount Amount to withdraw
-  function withdrawPendingBalance(address _owner, uint128 _amount) external;
+  /// @param _assetIndex Asset index
+  /// @param _baseAmount Base amount to withdraw
+  function withdrawPendingBalance(address _owner, uint16 _assetIndex, uint128 _baseAmount) external;
+
+  /// @notice Withdraws USDC tokens from ZkLighter contract to the owner (legacy)
+  /// @param _owner Account address
+  /// @param _baseAmount Base USDC amount to withdraw
+  function withdrawPendingBalanceLegacy(address _owner, uint128 _baseAmount) external;
 
   /// @notice Sends tokens
   /// @param _token Token address
   /// @param _to Address of recipient
   /// @param _amount Amount of tokens to transfer
   /// @param _maxAmount Maximum possible amount of tokens to transfer to this account
-  /// @return withdrawnAmount Amount of tokens transferred
-  function transferERC20(IERC20 _token, address _to, uint128 _amount, uint128 _maxAmount) external returns (uint128 withdrawnAmount);
+  /// @return uint256 Amount of tokens transferred
+  function transferERC20(IERC20 _token, address _to, uint256 _amount, uint256 _maxAmount) external returns (uint256);
+
+  /// @notice Sends ETH
+  /// @param _to Address of recipient
+  /// @param _amount Amount of ETH to transfer
+  /// @return uint256 Amount of ETH transferred
+  function transferETH(address _to, uint256 _amount) external returns (uint256);
 
   /// @notice Reverts unverified batches
   /// @param _batchesToRevert Array of batches to be reverted
@@ -214,9 +296,15 @@ interface IZkLighter is IEvents {
   function revertBatches(Storage.StoredBatchInfo[] memory _batchesToRevert, Storage.StoredBatchInfo memory _remainingBatch) external;
 
   /// @notice Get pending balance that the user can withdraw
-  /// @param _address Account address
+  /// @param _owner Owner account address
+  /// @param _assetIndex Asset index
   /// @return uint128 Pending balance
-  function getPendingBalance(address _address) external view returns (uint128);
+  function getPendingBalance(address _owner, uint16 _assetIndex) external view returns (uint128);
+
+  /// @notice Get pending balance that the user can withdraw in USDC (legacy)
+  /// @param _owner Owner account address
+  /// @return uint128 Pending USDC balance
+  function getPendingBalanceLegacy(address _owner) external view returns (uint128);
 
   /// @notice Commit a new batch with at least one blob.
   /// @param newBatchData  New batch to be committed

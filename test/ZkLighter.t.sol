@@ -3,10 +3,14 @@
 pragma solidity 0.8.25;
 
 import {Test} from "forge-std/Test.sol";
+import {console} from "forge-std/console.sol";
+
 import {ZkLighterTest} from "../contracts/test/ZkLighterTest.sol";
 import {ZkLighter} from "../contracts/ZkLighter.sol";
+import {AdditionalZkLighter} from "../contracts/AdditionalZkLighter.sol";
 import {IZkLighter} from "../contracts/interfaces/IZkLighter.sol";
 import {Storage} from "../contracts/Storage.sol";
+import {OwnableERC20} from "../contracts/test/OwnableERC20.sol";
 import {GovernanceTest} from "../contracts/test/GovernanceTest.sol";
 import {IGovernance} from "../contracts/interfaces/IGovernance.sol";
 import {IEvents} from "../contracts/interfaces/IEvents.sol";
@@ -15,8 +19,13 @@ import {TxTypes} from "../contracts/lib/TxTypes.sol";
 
 /// Commit, Verify and Execute tests for ZkLighter contract
 contract ZkLighterTests is Test {
+  OwnableERC20 usdc;
+  OwnableERC20 lit;
   ZkLighterTest zklighter;
   GovernanceTest governance;
+  AdditionalZkLighter additionalZkLighter;
+  address testAddress;
+  uint48 testAccountIndex;
 
   bytes pubData;
   IZkLighter.CommitBatchInfo commitBatchInfo;
@@ -25,8 +34,15 @@ contract ZkLighterTests is Test {
   function setUp() public {
     zklighter = new ZkLighterTest();
     governance = new GovernanceTest();
+    usdc = new OwnableERC20("USD Coin", "USDC", 6);
+    lit = new OwnableERC20("Lighter", "LIT", 18);
 
+    additionalZkLighter = new AdditionalZkLighter();
+    zklighter.setAdditionalZkLighterAddress(address(additionalZkLighter));
+
+    governance.overrideUSDCAddress(usdc);
     governance.overrideValidator(address(this), true);
+    governance.overrideNetworkGovernor(address(this));
     zklighter.setGovernanceAddress(address(governance));
 
     ZkLighterVerifierTest verifier = new ZkLighterVerifierTest();
@@ -62,9 +78,139 @@ contract ZkLighterTests is Test {
 
     zklighter.setStoredBatchHash(1, keccak256(abi.encode(storedBatchInfo)));
     zklighter.setCommittedBatchesCount(1);
+
+    testAddress = address(0x1234);
+    testAccountIndex = 1234;
+    zklighter.setAddressToAccountIndex(testAddress, testAccountIndex);
+
+    vm.deal(testAddress, 1000000000000000000000 ether);
+    vm.deal(address(zklighter), 10 ether);
+
+    usdc.mint(testAddress, 1_000_000_000_000 * 10 ** 6);
+    usdc.mint(address(zklighter), 1_000_000_000_000 * 10 ** 6);
+
+    lit.mint(testAddress, 1_000_000_000 * 10 ** 18);
+    lit.mint(address(zklighter), 1_000_000_000 * 10 ** 18);
+
+    zklighter.registerDefaultAssetConfigs();
+
+    zklighter.registerAssetConfig(2, address(lit), 0, 10 ** 6, 10 ** 12, (2 ** 50) - 1, 100);
   }
 
-  // Commit TEST
+  // USDC deposit test
+  function test_deposit_usdc_fail_and_success() public {
+    uint16 invalidAssetIndex = 4;
+    uint16 validAssetIndex = 3;
+    uint256 invalidDepositAmount = 100_000;
+    uint256 depositAmount = 1_000_000;
+
+    uint256 balanceBefore = usdc.balanceOf(testAddress);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, invalidAssetIndex, TxTypes.RouteType.Perps, depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Perps, depositAmount);
+
+    vm.prank(testAddress);
+    usdc.approve(address(zklighter), depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Perps, invalidDepositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: 1 ether}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Deposit(testAccountIndex, testAddress, validAssetIndex, TxTypes.RouteType.Perps, uint128(depositAmount));
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Perps, depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Perps, depositAmount);
+
+    uint256 balanceAfter = usdc.balanceOf(testAddress);
+    assertEq(balanceBefore - balanceAfter, depositAmount, "USDC balance should be decreased by deposit amount");
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, 0);
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(depositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(depositAmount));
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(depositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(depositAmount));
+  }
+
+  // Eth deposit test
+  function test_deposit_eth_fail_and_success() public {
+    uint16 invalidAssetIndex = 3;
+    uint16 validAssetIndex = 1;
+    uint256 eth_invalidDepositAmount = 0.0001 ether;
+
+    uint256 depositAmount = 100000; // 0.001 ether
+    uint256 eth_depositAmount = 0.001 ether;
+
+    uint256 balanceBefore = address(testAddress).balance;
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: eth_depositAmount}(testAddress, invalidAssetIndex, TxTypes.RouteType.Perps, eth_depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: eth_invalidDepositAmount}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: eth_invalidDepositAmount}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_invalidDepositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: eth_depositAmount}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_invalidDepositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: eth_depositAmount + 100}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_depositAmount + 100);
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Deposit(testAccountIndex, testAddress, validAssetIndex, TxTypes.RouteType.Perps, uint128(depositAmount));
+    zklighter.depositTest{value: eth_depositAmount}(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_depositAmount);
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Perps, eth_depositAmount);
+
+    uint256 balanceAfter = address(testAddress).balance;
+    assertEq(balanceBefore - balanceAfter, eth_depositAmount, "ETH balance should be decreased by deposit amount");
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, 0);
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(depositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(depositAmount));
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(depositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(depositAmount));
+  }
+
+  // Commit batch test
   function test_commitBatch_success() public {
     bytes32[] memory blobhashes = new bytes32[](1);
     blobhashes[0] = bytes32(0x016542a1e23b3617419d3da0814265983e60fdc0c75759656c8229a828ffa07c);
@@ -77,6 +223,94 @@ contract ZkLighterTests is Test {
 
     bytes32 newStoredBatchHash = zklighter.storedBatchHashes(2);
     assertTrue(newStoredBatchHash != bytes32(0), "Stored batch hash should be set");
+  }
+
+  // LIT deposit / withdraw test
+  function test_deposit_withdraw_lit_fail_and_success() public {
+    uint16 invalidAssetIndex = 10;
+    uint16 validAssetIndex = 2;
+    uint256 invalidDepositAmount = 80 * (10 ** 12);
+    uint128 baseDepositAmount = 100;
+    uint256 depositAmount = baseDepositAmount * (10 ** 12);
+    uint256 balanceBefore = lit.balanceOf(testAddress);
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, invalidAssetIndex, TxTypes.RouteType.Spot, depositAmount);
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Spot, depositAmount);
+    vm.prank(testAddress);
+    lit.approve(address(zklighter), depositAmount);
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Spot, invalidDepositAmount);
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest{value: 1 ether}(testAddress, validAssetIndex, TxTypes.RouteType.Spot, depositAmount);
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Deposit(testAccountIndex, testAddress, validAssetIndex, TxTypes.RouteType.Spot, baseDepositAmount);
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Spot, depositAmount);
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.depositTest(testAddress, validAssetIndex, TxTypes.RouteType.Spot, depositAmount);
+    uint256 balanceAfter = lit.balanceOf(testAddress);
+    assertEq(balanceBefore - balanceAfter, depositAmount, "LIT balance should be decreased by deposit amount");
+
+    // try to withdraw it should revert
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(baseDepositAmount));
+
+    vm.prank(testAddress);
+    vm.expectRevert();
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, 0);
+
+    // enable withdrawals
+    zklighter.updateAssetConfig(validAssetIndex, 1, (2 ** 50) - 1, 100);
+
+    // try again
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(baseDepositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Perps, uint64(baseDepositAmount));
+
+    vm.prank(testAddress);
+    vm.expectEmit();
+    emit IEvents.Withdraw(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(baseDepositAmount));
+    zklighter.withdrawTest(testAccountIndex, validAssetIndex, TxTypes.RouteType.Spot, uint64(baseDepositAmount));
+  }
+
+  function test_check_default_asset_configs() public {
+    ZkLighter.AssetConfig memory usdcConfig = zklighter.getAssetConfig(3);
+    uint256 minDeposit = usdcConfig.minDepositTicks * usdcConfig.tickSize;
+    uint256 depositCap = usdcConfig.depositCapTicks * usdcConfig.tickSize;
+    assertEq(usdcConfig.tokenAddress, address(usdc), "USDC token address should be set");
+    assertEq(usdcConfig.withdrawalsEnabled, 1, "USDC withdrawals should be enabled");
+    assertEq(usdcConfig.extensionMultiplier, 1_000_000, "USDC extension multiplier should be 1_000_000");
+    assertEq(usdcConfig.tickSize, 1, "USDC tick size should be 0.000001 USDC");
+    assertEq(minDeposit, 10 ** 6, "USDC min deposit should be 1 USDC");
+    assertEq(depositCap, (2 ** 60) - 1, "USDC deposit cap should be max");
+
+    ZkLighter.AssetConfig memory ethConfig = zklighter.getAssetConfig(1);
+    minDeposit = ethConfig.minDepositTicks * ethConfig.tickSize;
+    depositCap = ethConfig.depositCapTicks * ethConfig.tickSize;
+    assertEq(ethConfig.tokenAddress, address(0), "ETH token address should be set");
+    assertEq(ethConfig.withdrawalsEnabled, 1, "ETH withdrawals should be enabled");
+    assertEq(ethConfig.extensionMultiplier, 100, "ETH extension multiplier should be 100");
+    assertEq(ethConfig.tickSize, 10 ** 10, "ETH tick size should be 0.00000001 ETH");
+    assertEq(minDeposit, 10 ** 15, "ETH min deposit should be 0.001 ETH");
+    assertEq(depositCap, 10 ** 10 * ((2 ** 60) - 1), "ETH deposit cap should be max");
+
+    ZkLighter.AssetConfig memory litConfig = zklighter.getAssetConfig(2);
+    minDeposit = litConfig.minDepositTicks * litConfig.tickSize;
+    depositCap = litConfig.depositCapTicks * litConfig.tickSize;
+    assertEq(litConfig.tokenAddress, address(lit), "LIT token address should be set");
+    assertEq(litConfig.withdrawalsEnabled, 0, "LIT withdrawals should be disabled");
+    assertEq(litConfig.extensionMultiplier, 1_000_000, "LIT extension multiplier should be 1_000_000");
+    assertEq(litConfig.tickSize, 10 ** 12, "LIT tick size should be 0.000001 LIT");
+    assertEq(minDeposit, 100 * (10 ** 12), "LIT min deposit should be 1 LIT");
+    assertEq(depositCap, (10 ** 12) * ((2 ** 50) - 1), "LIT deposit cap should be max");
   }
 
   function test_commitBatch_success_priority_and_onchain() public {
@@ -217,6 +451,73 @@ contract ZkLighterTests is Test {
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
   }
 
+  function test_cancelOutstandingDepositsForDesertMode() public {
+    uint16 assetIndex = 3;
+    uint48 accountIndex = testAccountIndex;
+
+    (uint128 balance1, ) = zklighter.getPendingBalances(assetIndex, address(testAddress));
+    uint64 depositAmount = 1_000_000;
+
+    vm.expectRevert(IZkLighter.ZkLighter_DesertModeInactive.selector);
+    zklighter.cancelOutstandingDepositsForDesertMode(1, new bytes[](1));
+
+    zklighter.setDesertMode(true);
+    vm.expectRevert(IZkLighter.ZkLighter_NoOutstandingDepositsForCancelation.selector);
+    zklighter.cancelOutstandingDepositsForDesertMode(1, new bytes[](1));
+
+    zklighter.setOpenPriorityRequestCount(1);
+    vm.expectRevert(IZkLighter.ZkLighter_InvalidParamsForCancelOutstandingDeposits.selector);
+    zklighter.cancelOutstandingDepositsForDesertMode(2, new bytes[](2));
+
+    vm.expectRevert(IZkLighter.ZkLighter_InvalidParamsForCancelOutstandingDeposits.selector);
+    zklighter.cancelOutstandingDepositsForDesertMode(1, new bytes[](1));
+
+    for (uint i = 0; i < 2; ++i) {
+      bytes memory depositPubdata;
+      if (i == 0) {
+        depositPubdata = abi.encodePacked(
+          uint8(TxTypes.PriorityPubDataTypeL1Deposit),
+          accountIndex,
+          address(testAddress),
+          assetIndex,
+          uint8(1), // Route type
+          uint8(1), // Route type
+          depositAmount
+        );
+      } else {
+        depositPubdata = abi.encodePacked(
+          uint8(TxTypes.PriorityPubDataTypeL1Deposit),
+          accountIndex,
+          address(testAddress),
+          assetIndex,
+          uint8(1), // Route type
+          depositAmount
+        );
+      }
+
+      bytes memory padded = new bytes(100);
+      for (uint j = 0; j < depositPubdata.length; ++j) {
+        padded[j] = depositPubdata[j];
+      }
+      bytes32 prefix = keccak256(abi.encodePacked(bytes32(0), padded));
+
+      zklighter.setPriorityRequest(0, prefix, 10);
+
+      bytes[] memory arr = new bytes[](1);
+      arr[0] = depositPubdata;
+
+      if (i == 0) {
+        vm.expectRevert(IZkLighter.ZkLighter_DepositPubdataHashMismatch.selector);
+        zklighter.cancelOutstandingDepositsForDesertMode(1, arr);
+      } else {
+        zklighter.cancelOutstandingDepositsForDesertMode(1, arr);
+      }
+    }
+
+    (uint128 balance2, ) = zklighter.getPendingBalances(assetIndex, address(testAddress));
+    assertEq(balance2 - balance1, depositAmount, "Pending balance should be increased by canceled deposit amount");
+  }
+
   function test_verifyBatch_success_priority_and_onchain() public {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
@@ -269,18 +570,17 @@ contract ZkLighterTests is Test {
     zklighter.verifyBatch(storedBatchInfoInvalid, hex"AAAA");
   }
 
-  // Execute TEST
-  function test_executeBatches_success() public {
-    // Verify old batch
+  // Execute and withdraw USDC test
+  function test_executeBatches_usdc_success() public {
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
-    uint64 usdcAmount = 1000;
+    uint16 usdcAssetIndex = 3;
+    uint64 usdcAmount = 1250;
 
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
     commitBatchInfoOnChain.onChainOperationsHash = keccak256(
-      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount)
+      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount)
     );
     commitBatchInfoOnChain.priorityRequestCount = 1;
     commitBatchInfoOnChain.prefixPriorityRequestHash = keccak256(abi.encode("priority"));
@@ -315,7 +615,6 @@ contract ZkLighterTests is Test {
     assertTrue(zklighter.stateRoot() != storedBatchInfoOnChain.stateRoot, "Lazy execution should not kick in");
 
     // Only batch number 2 has onchain operations
-
     vm.expectEmit();
     emit IEvents.BatchesExecuted(2, 2); // expect emit log similar to this
 
@@ -323,10 +622,95 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
-    onChainPubDatas[0] = abi.encodePacked(TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount);
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
+    onChainPubDatas[0] = abi.encodePacked(TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount);
     zklighter.executeBatches(batches, onChainPubDatas);
+    uint128 pendingBalance = zklighter.getPendingBalance(testAddress, usdcAssetIndex);
+    uint256 oldUSDCBalance = usdc.balanceOf(testAddress);
 
+    zklighter.withdrawPendingBalance(testAddress, usdcAssetIndex, usdcAmount);
+
+    uint256 newUSDCBalance = usdc.balanceOf(testAddress);
+    uint128 newPendingBalance = zklighter.getPendingBalance(testAddress, usdcAssetIndex);
+
+    assertEq(pendingBalance, usdcAmount, "Pending balance should be increased");
+    assertEq(newUSDCBalance, oldUSDCBalance + usdcAmount, "USDC balance should be increased by withdrawn amount");
+    assertEq(newPendingBalance, 0, "Pending balance should be decreased after withdrawal");
+    assertEq(zklighter.stateRoot(), storedBatchInfoOnChain.stateRoot, "state root should be set");
+    assertEq(zklighter.validiumRoot(), storedBatchInfoOnChain.validiumRoot, "validium root should be set");
+    assertEq(zklighter.pendingOnChainBatchesCount(), 0, "Pending on-chain batches count should be 0");
+    assertEq(zklighter.executedOnChainBatchesCount(), 1, "Executed on-chain batches count should be 1");
+    assertEq(zklighter.openPriorityRequestCount(), 0, "Open priority request count should be 0");
+    assertEq(zklighter.executedPriorityRequestCount(), 1, "Executed priority request count should be 1");
+    assertEq(zklighter.executedBatchesCount(), 2, "Executed batches count should be 2");
+  }
+
+  // Execute and withdraw ETH test
+  function test_executeBatches_eth_success() public {
+    zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
+
+    uint16 ethAssetIndex = 1;
+    uint64 baseEthAmount = 12340000; // (0.1234 ETH)
+
+    // Commit new batch with onchain operations and priority requests
+    IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
+    commitBatchInfoOnChain.onChainOperationsHash = keccak256(
+      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, ethAssetIndex, baseEthAmount)
+    );
+    commitBatchInfoOnChain.priorityRequestCount = 1;
+    commitBatchInfoOnChain.prefixPriorityRequestHash = keccak256(abi.encode("priority"));
+    zklighter.setPriorityRequest(0, commitBatchInfoOnChain.prefixPriorityRequestHash, 10);
+    zklighter.setOpenPriorityRequestCount(1);
+
+    bytes32[] memory blobhashes = new bytes32[](1);
+    blobhashes[0] = bytes32(0x016542a1e23b3617419d3da0814265983e60fdc0c75759656c8229a828ffa07c);
+    vm.blobhashes(blobhashes);
+    zklighter.commitBatch(commitBatchInfoOnChain, storedBatchInfo);
+
+    Storage.StoredBatchInfo memory storedBatchInfoOnChain = Storage.StoredBatchInfo({
+      batchNumber: 2,
+      endBlockNumber: commitBatchInfoOnChain.endBlockNumber,
+      batchSize: commitBatchInfoOnChain.batchSize,
+      startTimestamp: commitBatchInfoOnChain.startTimestamp,
+      endTimestamp: commitBatchInfoOnChain.endTimestamp,
+      priorityRequestCount: commitBatchInfoOnChain.priorityRequestCount,
+      prefixPriorityRequestHash: commitBatchInfoOnChain.prefixPriorityRequestHash,
+      onChainOperationsHash: commitBatchInfoOnChain.onChainOperationsHash,
+      stateRoot: commitBatchInfoOnChain.newStateRoot,
+      validiumRoot: commitBatchInfoOnChain.newValidiumRoot,
+      commitment: bytes32(0)
+    });
+    // Override commitment
+    zklighter.setStoredBatchHash(2, keccak256(abi.encode(storedBatchInfoOnChain)));
+
+    // Verify new batch
+    zklighter.verifyBatch(storedBatchInfoOnChain, hex"AAAA");
+    assertEq(zklighter.verifiedBatchesCount(), 2, "Batch should be verified");
+    assertEq(zklighter.verifiedPriorityRequestCount(), 1, "Priority request should be verified");
+    assertTrue(zklighter.stateRoot() != storedBatchInfoOnChain.stateRoot, "Lazy execution should not kick in");
+
+    // Only batch number 2 has onchain operations
+    vm.expectEmit();
+    emit IEvents.BatchesExecuted(2, 2); // expect emit log similar to this
+
+    Storage.StoredBatchInfo[] memory batches = new Storage.StoredBatchInfo[](1);
+    batches[0] = storedBatchInfoOnChain;
+
+    bytes[] memory onChainPubDatas = new bytes[](1);
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, ethAmount
+    onChainPubDatas[0] = abi.encodePacked(TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, ethAssetIndex, baseEthAmount);
+    zklighter.executeBatches(batches, onChainPubDatas);
+    uint128 pendingBalance = zklighter.getPendingBalance(testAddress, ethAssetIndex);
+    uint256 oldETHBalance = address(testAddress).balance;
+
+    zklighter.withdrawPendingBalance(testAddress, ethAssetIndex, baseEthAmount);
+
+    uint256 newETHBalance = address(testAddress).balance;
+    uint128 newPendingBalance = zklighter.getPendingBalance(testAddress, ethAssetIndex);
+
+    assertEq(pendingBalance, baseEthAmount, "Pending balance should be increased");
+    assertEq(newETHBalance, oldETHBalance + baseEthAmount * 10 ** 10, "ETH balance should be increased by withdrawn amount");
+    assertEq(newPendingBalance, 0, "Pending balance should be decreased after withdrawal");
     assertEq(zklighter.stateRoot(), storedBatchInfoOnChain.stateRoot, "state root should be set");
     assertEq(zklighter.validiumRoot(), storedBatchInfoOnChain.validiumRoot, "validium root should be set");
     assertEq(zklighter.pendingOnChainBatchesCount(), 0, "Pending on-chain batches count should be 0");
@@ -340,13 +724,13 @@ contract ZkLighterTests is Test {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
     commitBatchInfoOnChain.onChainOperationsHash = keccak256(
-      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount)
+      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount)
     );
     commitBatchInfoOnChain.priorityRequestCount = 1;
     commitBatchInfoOnChain.prefixPriorityRequestHash = keccak256(abi.encode("priority"));
@@ -383,8 +767,8 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
-    onChainPubDatas[0] = abi.encodePacked(TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount);
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
+    onChainPubDatas[0] = abi.encodePacked(TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount);
 
     governance.overrideValidator(address(this), false);
     zklighter.executeBatches(batches, onChainPubDatas);
@@ -394,11 +778,11 @@ contract ZkLighterTests is Test {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
-    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount));
-    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 1, usdcAmount + 1));
+    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount));
+    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 1, usdcAssetIndex, usdcAmount + 1));
 
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
@@ -444,13 +828,15 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
     onChainPubDatas[0] = abi.encodePacked(
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex,
+      testAccountIndex,
+      usdcAssetIndex,
       usdcAmount,
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex + 1,
+      testAccountIndex + 1,
+      usdcAssetIndex,
       usdcAmount + 1
     );
     zklighter.executeBatches(batches, onChainPubDatas);
@@ -577,13 +963,11 @@ contract ZkLighterTests is Test {
   function test_executeBatches_fail_wrong_pubdata() public {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
-
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
-    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount));
-    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 1, usdcAmount + 1));
-
+    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount));
+    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 1, usdcAssetIndex, usdcAmount + 1));
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
     commitBatchInfoOnChain.onChainOperationsHash = onChainHash;
@@ -621,13 +1005,15 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
     onChainPubDatas[0] = abi.encodePacked(
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex,
+      testAccountIndex,
+      usdcAssetIndex,
       usdcAmount,
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex + 1,
+      testAccountIndex + 1,
+      usdcAssetIndex,
       usdcAmount + 2 // Wrong amount
     );
 
@@ -639,11 +1025,11 @@ contract ZkLighterTests is Test {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
-    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount));
-    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 1, usdcAmount + 1));
+    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount));
+    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 1, usdcAssetIndex, usdcAmount + 1));
 
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
@@ -682,13 +1068,15 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
     onChainPubDatas[0] = abi.encodePacked(
       uint8(TxTypes.OnChainPubDataType.Withdraw) + 1,
-      masterAccountIndex,
+      testAccountIndex,
+      usdcAssetIndex,
       usdcAmount,
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex + 1,
+      testAccountIndex + 1,
+      usdcAssetIndex,
       usdcAmount + 1
     );
 
@@ -700,11 +1088,11 @@ contract ZkLighterTests is Test {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
-    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount));
-    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 1, usdcAmount + 1));
+    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount));
+    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 1, usdcAssetIndex, usdcAmount + 1));
 
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
@@ -743,13 +1131,15 @@ contract ZkLighterTests is Test {
     batches[0] = storedBatchInfoOnChain;
 
     bytes[] memory onChainPubDatas = new bytes[](1);
-    // Build bytes TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount
+    // Build bytes TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAmount
     onChainPubDatas[0] = abi.encodePacked(
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex,
+      testAccountIndex,
+      usdcAssetIndex,
       usdcAmount,
       TxTypes.OnChainPubDataType.Withdraw,
-      masterAccountIndex + 1,
+      testAccountIndex + 1,
+      usdcAssetIndex,
       usdcAmount + 1,
       uint8(1) // Extra byte at the end
     );
@@ -762,12 +1152,11 @@ contract ZkLighterTests is Test {
     // Verify old batch
     zklighter.verifyBatch(storedBatchInfo, hex"AAAA");
 
-    uint48 masterAccountIndex = 0;
+    uint16 usdcAssetIndex = 3;
     uint64 usdcAmount = 1000;
 
-    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex, usdcAmount));
-    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 1, usdcAmount + 1));
-
+    bytes32 onChainHash = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex, usdcAssetIndex, usdcAmount));
+    onChainHash = keccak256(abi.encodePacked(onChainHash, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 1, usdcAssetIndex, usdcAmount + 1));
     // Commit new batch with onchain operations and priority requests
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain = commitBatchInfo;
     commitBatchInfoOnChain.onChainOperationsHash = onChainHash;
@@ -800,8 +1189,12 @@ contract ZkLighterTests is Test {
     // Verify new batch
     zklighter.verifyBatch(storedBatchInfoOnChain, hex"AAAA");
 
-    bytes32 onChainHash2 = keccak256(abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 2, usdcAmount + 2));
-    onChainHash2 = keccak256(abi.encodePacked(onChainHash2, TxTypes.OnChainPubDataType.Withdraw, masterAccountIndex + 3, usdcAmount + 3));
+    bytes32 onChainHash2 = keccak256(
+      abi.encodePacked(bytes32(0), TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 2, usdcAssetIndex, usdcAmount + 2)
+    );
+    onChainHash2 = keccak256(
+      abi.encodePacked(onChainHash2, TxTypes.OnChainPubDataType.Withdraw, testAccountIndex + 3, usdcAssetIndex, usdcAmount + 3)
+    );
 
     IZkLighter.CommitBatchInfo memory commitBatchInfoOnChain2 = IZkLighter.CommitBatchInfo({
       endBlockNumber: 3,

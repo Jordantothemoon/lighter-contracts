@@ -131,7 +131,7 @@ export function calculateCommitment(batch: CommitBatchInfo, blobCommitment: stri
 }
 
 export enum PriorityPubDataType {
-  Empty = 30,
+  Empty = 40,
   // L1 transactions
   L1Deposit,
   L1ChangePubKey,
@@ -171,132 +171,304 @@ export function padEndBytes(data: string, length: number) {
 }
 
 export const PubDataTypeMap = {
-  [PriorityPubDataType.L1Deposit]: ['uint8', 'uint48', 'address', 'uint64'],
-  [PriorityPubDataType.L1CreateMarket]: [
-    'uint8',
-    'uint8',
-    'uint32',
-    'uint32',
-    'uint32',
-    'uint32',
-    'uint64',
-    'uint64',
-    'uint16',
-    'uint16',
-    'uint16',
-    'uint16',
-    'uint32',
-    'uint8',
-    'uint8',
-    'uint24',
-    'uint24',
-    'uint56',
-    'uint48',
-    'bytes32',
-  ],
-  [PriorityPubDataType.L1UpdateMarket]: [
-    'uint8',
-    'uint8',
-    'uint32',
-    'uint32',
-    'uint32',
-    'uint32',
-    'uint64',
-    'uint64',
-    'uint16',
-    'uint16',
-    'uint16',
-    'uint16',
-    'uint32',
-    'uint24',
-    'uint24',
-    'uint56',
-    'uint48',
-  ],
+  [PriorityPubDataType.L1Deposit]: ['uint8', 'uint48', 'address', 'uint16', 'uint8', 'uint64'],
+  [PriorityPubDataType.L1CreateMarket]: ['uint8', 'uint16', 'uint8', 'bytes', 'uint8', 'uint8', 'bytes32'],
+  [PriorityPubDataType.L1UpdateMarket]: ['uint8', 'uint16', 'uint8', 'bytes'],
   [PriorityPubDataType.L1ChangePubKey]: ['uint8', 'uint48', 'uint48', 'uint8', 'bytes'],
-  [PriorityPubDataType.L1Withdraw]: ['uint8', 'uint48', 'uint48', 'uint64'],
+  [PriorityPubDataType.L1Withdraw]: ['uint8', 'uint48', 'uint48', 'uint16', 'uint8', 'uint64'],
   [PriorityPubDataType.L1CancelAllOrders]: ['uint8', 'uint48', 'uint48'],
-  [PriorityPubDataType.L1CreateOrder]: ['uint8', 'uint48', 'uint48', 'uint8', 'uint48', 'uint32', 'uint8', 'uint8'],
+  [PriorityPubDataType.L1CreateOrder]: ['uint8', 'uint48', 'uint48', 'uint16', 'uint48', 'uint32', 'uint8', 'uint8'],
   [PriorityPubDataType.L1BurnShares]: ['uint8', 'uint48', 'uint48', 'uint48', 'uint64'],
 };
 
 export interface CreateMarket {
   marketIndex: number;
-  quoteMultiplier: number;
-  takerFee: number;
-  makerFee: number;
-  liquidationFee: number;
-  minBaseAmount: number;
-  minQuoteAmount: number;
-  defaultInitialMarginFraction: number;
-  minInitialMarginFraction: number;
-  maintenanceMarginFraction: number;
-  closeOutMarginFraction: number;
-  interestRate: number;
-  fundingClampSmall: number;
-  fundingClampBig: number;
-  openInterestLimit: number;
-  orderQuoteLimit: number;
+  marketType: number;
+  marketData: string;
 }
 
-export function emptyCreateMarket(marketIndex: number): CreateMarket {
+export interface RawCreatePerpsMarket {
+  marketIndex: number;
+  marketType: number;
+  rawMarketData: {
+    quoteMultiplier: number;
+    takerFee: number;
+    makerFee: number;
+    liquidationFee: number;
+    minBaseAmount: number;
+    minQuoteAmount: number;
+    defaultInitialMarginFraction: number;
+    minInitialMarginFraction: number;
+    maintenanceMarginFraction: number;
+    closeOutMarginFraction: number;
+    interestRate: number;
+    fundingClampSmall: number;
+    fundingClampBig: number;
+    openInterestLimit: number;
+    orderQuoteLimit: number;
+  };
+}
+
+export function emptyCreatePerpsMarket(marketIndex: number): RawCreatePerpsMarket {
   return {
     marketIndex,
-    quoteMultiplier: 0,
-    takerFee: 0,
-    makerFee: 0,
-    liquidationFee: 0,
-    minBaseAmount: 0,
-    minQuoteAmount: 0,
-    defaultInitialMarginFraction: 0,
-    minInitialMarginFraction: 0,
-    maintenanceMarginFraction: 0,
-    closeOutMarginFraction: 0,
-    interestRate: 0,
-    fundingClampSmall: 0,
-    fundingClampBig: 0,
-    openInterestLimit: 0,
-    orderQuoteLimit: 0,
+    marketType: 0,
+    rawMarketData: {
+      quoteMultiplier: 0,
+      takerFee: 0,
+      makerFee: 0,
+      liquidationFee: 0,
+      minBaseAmount: 0,
+      minQuoteAmount: 0,
+      defaultInitialMarginFraction: 0,
+      minInitialMarginFraction: 0,
+      maintenanceMarginFraction: 0,
+      closeOutMarginFraction: 0,
+      interestRate: 0,
+      fundingClampSmall: 0,
+      fundingClampBig: 0,
+      openInterestLimit: 0,
+      orderQuoteLimit: 0,
+    },
+  };
+}
+
+export function serializeCreatePerpsMarket(market: RawCreatePerpsMarket): CreateMarket {
+  return {
+    marketIndex: market.marketIndex,
+    marketType: market.marketType,
+    marketData: ethers.solidityPacked(
+      [
+        'uint32',
+        'uint32',
+        'uint32',
+        'uint32',
+        'uint48',
+        'uint48',
+        'uint16',
+        'uint16',
+        'uint16',
+        'uint16',
+        'uint32',
+        'uint24',
+        'uint24',
+        'uint56',
+        'uint48',
+      ],
+      [
+        market.rawMarketData.quoteMultiplier,
+        market.rawMarketData.takerFee,
+        market.rawMarketData.makerFee,
+        market.rawMarketData.liquidationFee,
+        market.rawMarketData.minBaseAmount,
+        market.rawMarketData.minQuoteAmount,
+        market.rawMarketData.defaultInitialMarginFraction,
+        market.rawMarketData.minInitialMarginFraction,
+        market.rawMarketData.maintenanceMarginFraction,
+        market.rawMarketData.closeOutMarginFraction,
+        market.rawMarketData.interestRate,
+        market.rawMarketData.fundingClampSmall,
+        market.rawMarketData.fundingClampBig,
+        market.rawMarketData.openInterestLimit,
+        market.rawMarketData.orderQuoteLimit,
+      ],
+    ),
+  };
+}
+
+export interface RawCreateSpotMarket {
+  marketIndex: number;
+  marketType: number;
+  rawMarketData: {
+    baseAssetIndex: number;
+    quoteAssetIndex: number;
+    sizeExtensionMultiplier: number;
+    quoteExtensionMultiplier: number;
+    takerFee: number;
+    makerFee: number;
+    minBaseAmount: number;
+    minQuoteAmount: number;
+    orderQuoteLimit: number;
+  };
+}
+
+export function emptyCreateSpotMarket(marketIndex: number): RawCreateSpotMarket {
+  return {
+    marketIndex,
+    marketType: 1,
+    rawMarketData: {
+      baseAssetIndex: 0,
+      quoteAssetIndex: 0,
+      sizeExtensionMultiplier: 0,
+      quoteExtensionMultiplier: 0,
+      takerFee: 0,
+      makerFee: 0,
+      minBaseAmount: 0,
+      minQuoteAmount: 0,
+      orderQuoteLimit: 0,
+    },
+  };
+}
+
+export function serializeCreateSpotMarket(market: RawCreateSpotMarket): CreateMarket {
+  return {
+    marketIndex: market.marketIndex,
+    marketType: market.marketType,
+    marketData: ethers.solidityPacked(
+      ['uint16', 'uint16', 'uint56', 'uint56', 'uint32', 'uint32', 'uint48', 'uint48', 'uint48'],
+      [
+        market.rawMarketData.baseAssetIndex,
+        market.rawMarketData.quoteAssetIndex,
+        market.rawMarketData.sizeExtensionMultiplier,
+        market.rawMarketData.quoteExtensionMultiplier,
+        market.rawMarketData.takerFee,
+        market.rawMarketData.makerFee,
+        market.rawMarketData.minBaseAmount,
+        market.rawMarketData.minQuoteAmount,
+        market.rawMarketData.orderQuoteLimit,
+      ],
+    ),
   };
 }
 
 export interface UpdateMarket {
   marketIndex: number;
-  status: number;
-  takerFee: number;
-  makerFee: number;
-  liquidationFee: number;
-  minBaseAmount: number;
-  minQuoteAmount: number;
-  defaultInitialMarginFraction: number;
-  minInitialMarginFraction: number;
-  maintenanceMarginFraction: number;
-  closeOutMarginFraction: number;
-  interestRate: number;
-  fundingClampSmall: number;
-  fundingClampBig: number;
-  openInterestLimit: number;
-  orderQuoteLimit: number;
+  marketType: number;
+  marketData: string;
 }
 
-export function emptyUpdateMarket(marketIndex: number, status: number): UpdateMarket {
+export interface RawUpdatePerpsMarket {
+  marketIndex: number;
+  marketType: number;
+  rawMarketData: {
+    status: number;
+    takerFee: number;
+    makerFee: number;
+    liquidationFee: number;
+    minBaseAmount: number;
+    minQuoteAmount: number;
+    defaultInitialMarginFraction: number;
+    minInitialMarginFraction: number;
+    maintenanceMarginFraction: number;
+    closeOutMarginFraction: number;
+    interestRate: number;
+    fundingClampSmall: number;
+    fundingClampBig: number;
+    openInterestLimit: number;
+    orderQuoteLimit: number;
+  };
+}
+
+export function emptyUpdatePerpsMarket(marketIndex: number, status: number): RawUpdatePerpsMarket {
   return {
     marketIndex,
-    status,
-    takerFee: 0,
-    makerFee: 0,
-    liquidationFee: 0,
-    minBaseAmount: 0,
-    minQuoteAmount: 0,
-    defaultInitialMarginFraction: 0,
-    minInitialMarginFraction: 0,
-    maintenanceMarginFraction: 0,
-    closeOutMarginFraction: 0,
-    interestRate: 0,
-    fundingClampSmall: 0,
-    fundingClampBig: 0,
-    openInterestLimit: 0,
-    orderQuoteLimit: 0,
+    marketType: 0,
+    rawMarketData: {
+      status,
+      takerFee: 0,
+      makerFee: 0,
+      liquidationFee: 0,
+      minBaseAmount: 0,
+      minQuoteAmount: 0,
+      defaultInitialMarginFraction: 0,
+      minInitialMarginFraction: 0,
+      maintenanceMarginFraction: 0,
+      closeOutMarginFraction: 0,
+      interestRate: 0,
+      fundingClampSmall: 0,
+      fundingClampBig: 0,
+      openInterestLimit: 0,
+      orderQuoteLimit: 0,
+    },
+  };
+}
+
+export function serializeUpdatePerpsMarket(market: RawUpdatePerpsMarket): UpdateMarket {
+  return {
+    marketIndex: market.marketIndex,
+    marketType: market.marketType,
+    marketData: ethers.solidityPacked(
+      [
+        'uint8',
+        'uint32',
+        'uint32',
+        'uint32',
+        'uint48',
+        'uint48',
+        'uint16',
+        'uint16',
+        'uint16',
+        'uint16',
+        'uint32',
+        'uint24',
+        'uint24',
+        'uint56',
+        'uint48',
+      ],
+      [
+        market.rawMarketData.status,
+        market.rawMarketData.takerFee,
+        market.rawMarketData.makerFee,
+        market.rawMarketData.liquidationFee,
+        market.rawMarketData.minBaseAmount,
+        market.rawMarketData.minQuoteAmount,
+        market.rawMarketData.defaultInitialMarginFraction,
+        market.rawMarketData.minInitialMarginFraction,
+        market.rawMarketData.maintenanceMarginFraction,
+        market.rawMarketData.closeOutMarginFraction,
+        market.rawMarketData.interestRate,
+        market.rawMarketData.fundingClampSmall,
+        market.rawMarketData.fundingClampBig,
+        market.rawMarketData.openInterestLimit,
+        market.rawMarketData.orderQuoteLimit,
+      ],
+    ),
+  };
+}
+
+export interface RawUpdateSpotMarket {
+  marketIndex: number;
+  marketType: number;
+  rawMarketData: {
+    status: number;
+    takerFee: number;
+    makerFee: number;
+    minBaseAmount: number;
+    minQuoteAmount: number;
+    orderQuoteLimit: number;
+  };
+}
+
+export function emptyUpdateSpotMarket(marketIndex: number, status: number): RawUpdateSpotMarket {
+  return {
+    marketIndex,
+    marketType: 1,
+    rawMarketData: {
+      status,
+      takerFee: 0,
+      makerFee: 0,
+      minBaseAmount: 0,
+      minQuoteAmount: 0,
+      orderQuoteLimit: 0,
+    },
+  };
+}
+
+export function serializeUpdateSpotMarket(market: RawUpdateSpotMarket): UpdateMarket {
+  return {
+    marketIndex: market.marketIndex,
+    marketType: market.marketType,
+    marketData: ethers.solidityPacked(
+      ['uint8', 'uint32', 'uint32', 'uint48', 'uint48', 'uint48'],
+      [
+        market.rawMarketData.status,
+        market.rawMarketData.takerFee,
+        market.rawMarketData.makerFee,
+        market.rawMarketData.minBaseAmount,
+        market.rawMarketData.minQuoteAmount,
+        market.rawMarketData.orderQuoteLimit,
+      ],
+    ),
   };
 }
 

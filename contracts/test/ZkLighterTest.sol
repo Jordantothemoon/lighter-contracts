@@ -66,10 +66,10 @@ contract ZkLighterTest is ZkLighter {
     priorityRequests[executedPriorityRequestCount].expirationTimestamp = timestamp;
   }
 
-  function getPendingBalances(address account) public view returns (uint128 balanceToWithdraw, uint8 reserveValue) {
+  function getPendingBalances(uint16 assetIndex, address account) public view returns (uint128 balanceToWithdraw, uint8 reserveValue) {
     uint48 accountIndex = getAccountIndexFromAddress(account);
-    balanceToWithdraw = pendingBalance[accountIndex].balanceToWithdraw;
-    reserveValue = pendingBalance[accountIndex].gasReserveValue;
+    balanceToWithdraw = pendingAssetBalances[assetIndex][accountIndex].balanceToWithdraw;
+    reserveValue = pendingAssetBalances[assetIndex][accountIndex].gasReserveValue;
   }
 
   function setGovernanceAddress(address newGovernance) external {
@@ -96,7 +96,33 @@ contract ZkLighterTest is ZkLighter {
     openPriorityRequestCount = count;
   }
 
+  function setDesertMode(bool enabled) external {
+    desertMode = enabled;
+  }
+
+  function registerDefaultAssetConfigs() external {
+    _registerDefaultAssetConfigs();
+  }
+
   function setAddressToAccountIndex(address accountAddress, uint48 accountIndex) external {
     addressToAccountIndex[accountAddress] = accountIndex;
+  }
+
+  function depositTest(address _to, uint16 _assetIndex, TxTypes.RouteType _routeType, uint256 _amount) external payable {
+    (bool success, ) = address(additionalZkLighter).delegatecall(
+      abi.encodeWithSignature("deposit(address,uint16,uint8,uint256)", _to, _assetIndex, uint8(_routeType), _amount)
+    );
+    require(success, "Delegatecall to deposit failed");
+  }
+
+  function withdrawTest(uint48 _accountIndex, uint16 _assetIndex, TxTypes.RouteType _routeType, uint64 _baseAmount) external {
+    (bool success, ) = address(additionalZkLighter).delegatecall(
+      abi.encodeWithSignature("withdraw(uint48,uint16,uint8,uint64)", _accountIndex, _assetIndex, uint8(_routeType), _baseAmount)
+    );
+    require(success, "Delegatecall to withdraw failed");
+  }
+
+  function getAssetConfig(uint16 assetIndex) external view returns (AssetConfig memory) {
+    return assetConfigs[assetIndex];
   }
 }
