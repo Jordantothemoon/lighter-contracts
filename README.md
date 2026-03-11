@@ -9,7 +9,7 @@
 
 ### build && test
 ```shell
-yarn build
+delete yarn build
 yarn run hardhat test
 forge test --vvv
 ```
